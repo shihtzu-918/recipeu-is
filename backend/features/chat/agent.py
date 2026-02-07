@@ -111,8 +111,9 @@ def print_token_summary():
     print("|------|------|------|---------------|-------------------|--------------|------------|")
 
     # 노드 순서 및 메타데이터 정의 (timing_key 중복 노드 제거)
-    node_order = ["관련성 체크", "쿼리 재작성", "retrieve", "check_constraints", "관련성 평가", "web_search", "답변 생성"]
+    node_order = ["채팅 의도 감지", "관련성 체크", "쿼리 재작성", "retrieve", "check_constraints", "관련성 평가", "web_search", "답변 생성"]
     node_metadata = {
+        "채팅 의도 감지": {"step": "-", "desc": "채팅 의도 감지", "timing_key": "채팅 의도 감지"},
         "관련성 체크": {"step": "0", "desc": "레시피 관련성 체크", "timing_key": "check_relevance"},
         "쿼리 재작성": {"step": "1", "desc": "쿼리 재작성", "timing_key": "rewrite"},
         "retrieve": {"step": "2", "desc": "RAG 검색", "timing_key": "retrieve"},
@@ -175,7 +176,7 @@ def print_token_summary():
         print("|------|------|------------|------|")
 
         # 동작 플로우 순서 정의
-        node_order = ["check_relevance", "rewrite", "retrieve", "check_constraints", "grade", "web_search", "generate"]
+        node_order = ["채팅 의도 감지", "check_relevance", "rewrite", "retrieve", "check_constraints", "grade", "web_search", "generate"]
         total_time = sum(_node_timings.values())
 
         printed_timing_nodes = set()

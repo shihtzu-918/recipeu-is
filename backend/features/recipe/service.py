@@ -307,9 +307,10 @@ class RecipeService:
         print(f"[RecipeService] 인원수: {recipe_json['servings']}")
         print(f"[RecipeService] 이미지: {recipe_json.get('image', 'None')[:60]}...")
 
-        # ✅ 레시피 출력 및 토큰 요약
+        # ✅ 토큰 brief → 레시피 출력 → 토큰 detail 순서로 출력
+        print_recipe_token_brief()
         print_formatted_recipe(recipe_json)
-        print_recipe_token_summary()
+        print_recipe_token_detail()
 
         return recipe_json
 
@@ -357,9 +358,10 @@ class RecipeService:
         print(f"[RecipeService] 인원수: {recipe_json['servings']}")
         print(f"[RecipeService] 이미지: {recipe_json.get('image', 'None')[:60]}...")
 
-        # ✅ 레시피 출력 및 토큰 요약
+        # ✅ 토큰 brief → 레시피 출력 → 토큰 detail 순서로 출력
+        print_recipe_token_brief()
         print_formatted_recipe(recipe_json)
-        print_recipe_token_summary()
+        print_recipe_token_detail()
 
         return recipe_json
 
