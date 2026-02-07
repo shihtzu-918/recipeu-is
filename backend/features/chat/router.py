@@ -485,7 +485,10 @@ async def chat_websocket(
                     notifier_task = asyncio.create_task(progress_notifier())
 
                     try:
+                        # 이전 요청의 타이밍만 초기화 (현재 요청에서 기록된 타이밍은 보존)
+                        saved_timings = dict(_node_timings)
                         _node_timings.clear()
+                        _node_timings.update(saved_timings)
 
                         async def run_agent():
                             loop = asyncio.get_event_loop()
@@ -685,7 +688,10 @@ async def chat_websocket(
                     notifier_task = asyncio.create_task(progress_notifier())
 
                     try:
+                        # 이전 요청의 타이밍만 초기화 (현재 요청에서 기록된 타이밍은 보존)
+                        saved_timings = dict(_node_timings)
                         _node_timings.clear()
+                        _node_timings.update(saved_timings)
 
                         async def run_agent():
                             loop = asyncio.get_event_loop()
@@ -1096,7 +1102,10 @@ async def chat_websocket(
                 notifier_task = asyncio.create_task(progress_notifier())
 
                 try:
+                    # 이전 요청의 타이밍만 초기화 (현재 요청에서 기록된 채팅 의도 감지 등 보존)
+                    saved_timings = dict(_node_timings)
                     _node_timings.clear()
+                    _node_timings.update(saved_timings)
 
                     async def run_agent():
                         loop = asyncio.get_event_loop()
