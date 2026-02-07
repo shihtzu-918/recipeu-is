@@ -142,12 +142,6 @@ async def generate_recipe(
             member_info=request.member_info
         )
 
-        # 레시피 포맷 출력
-        print("\n" + format_recipe(recipe_data))
-
-        # 토큰 요약 출력
-        print_recipe_token_summary()
-
         generate_id = None
         # 백그라운드로 generate 테이블에 저장
         def save_to_generate():
@@ -270,12 +264,6 @@ async def generate_recipe_from_chat(
                 chat_history=chat_for_recipe,
                 member_info=user_constraints
             )
-
-        # 레시피 포맷 출력
-        print("\n" + format_recipe(recipe_json))
-
-        # 토큰 요약 출력
-        print_recipe_token_summary()
 
         print(f"[Recipe API] 레시피 생성 완료: {recipe_json.get('title')}")
         print(f"[Recipe API] 이미지: {recipe_json.get('image', 'None')[:60]}...")
