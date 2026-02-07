@@ -4,8 +4,10 @@ Recipe 비즈니스 로직
 """
 import os
 import re
+import json
 from pymongo import MongoClient
 from typing import List, Dict, Any
+from toon_format import decode as toon_decode
 from .prompts import RECIPE_QUERY_EXTRACTION_PROMPT, RECIPE_GENERATION_PROMPT, RECIPE_DETAIL_EXPANSION_PROMPT
 
 
@@ -226,6 +228,42 @@ def print_recipe_token_summary():
     print_recipe_token_detail()
 
 
+def _parse_recipe_response(response_text: str, servings: int = 1) -> dict:
+    """LLM 응답을 TOON 우선 → JSON fallback으로 파싱"""
+    # 마크다운 코드 블록 제거
+    cleaned = re.sub(r'```(?:json|toon)?\s*|\s*```', '', response_text).strip()
+
+    # 1차: TOON 파싱 시도
+    try:
+        recipe = toon_decode(cleaned)
+        if recipe.get('title') and recipe.get('ingredients'):
+            print(f"[RecipeService] TOON 파싱 성공")
+            return recipe
+    except Exception as e:
+        print(f"[RecipeService] TOON 파싱 실패: {e}")
+
+    # 2차: JSON 파싱 시도 (LLM이 JSON으로 응답한 경우)
+    try:
+        recipe = json.loads(cleaned)
+        if isinstance(recipe, dict):
+            print(f"[RecipeService] JSON fallback 파싱 성공")
+            return recipe
+    except json.JSONDecodeError as e:
+        print(f"[RecipeService] JSON 파싱도 실패: {e}")
+        print(f"[RecipeService] 응답: {cleaned[:200]}")
+
+    # 3차: 빈 레시피 반환
+    return {
+        "title": "추천 레시피",
+        "intro": "레시피 생성 중 오류가 발생했습니다.",
+        "cook_time": "30분",
+        "level": "중급",
+        "servings": f"{servings}인분",
+        "ingredients": [],
+        "steps": [],
+    }
+
+
 class RecipeService:
     def __init__(self, rag_system, recipe_db, user_profile=None):
         mongo_uri = os.getenv("MONGO_URI", "mongodb://root:RootPassword123@136.113.251.237:27017/admin")
@@ -433,32 +471,11 @@ class RecipeService:
 
             response_text = result.content.strip()
 
-            # JSON 추출
-            import json
-
-            # 마크다운 코드 블록 제거
-            response_text = re.sub(r'```json\s*|\s*```', '', response_text)
-
-            recipe_json = json.loads(response_text)
+            # TOON 파싱 → JSON fallback
+            recipe_json = _parse_recipe_response(response_text, servings)
 
             print(f"[RecipeService] 상세 레시피 생성 성공: {recipe_json.get('title')}")
             return recipe_json
-
-        except json.JSONDecodeError as e:
-            print(f"[RecipeService] JSON 파싱 실패: {e}")
-            print(f"[RecipeService] 응답: {response_text[:200]}")
-
-            # Fallback
-            return {
-                "title": "추천 레시피",
-                "intro": "레시피 생성 중 오류가 발생했습니다.",
-                "cook_time": "30분",
-                "level": "중급",
-                "servings": f"{servings}인분",
-                "ingredients": [],
-                "steps": [],
-                "tips": []
-            }
 
         except Exception as e:
             print(f"[RecipeService] 상세 레시피 생성 실패: {e}")
@@ -690,32 +707,11 @@ class RecipeService:
 
             response_text = result.content.strip()
 
-            # JSON 추출
-            import json
-
-            # 마크다운 코드 블록 제거
-            response_text = re.sub(r'```json\s*|\s*```', '', response_text)
-
-            recipe_json = json.loads(response_text)
+            # TOON 파싱 → JSON fallback
+            recipe_json = _parse_recipe_response(response_text, servings)
 
             print(f"[RecipeService] 레시피 생성 성공: {recipe_json.get('title')}")
             return recipe_json
-
-        except json.JSONDecodeError as e:
-            print(f"[RecipeService] JSON 파싱 실패: {e}")
-            print(f"[RecipeService] 응답: {response_text[:200]}")
-
-            # Fallback
-            return {
-                "title": "추천 레시피",
-                "intro": "레시피 생성 중 오류가 발생했습니다.",
-                "cook_time": "30분",
-                "level": "중급",
-                "servings": f"{servings}인분",
-                "ingredients": [],
-                "steps": [],
-                "tips": []
-            }
 
         except Exception as e:
             print(f"[RecipeService] 레시피 생성 실패: {e}")
