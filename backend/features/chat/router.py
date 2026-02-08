@@ -73,38 +73,36 @@ async def handle_recipe_modification(websocket: WebSocket, session: Dict, user_i
 
     await websocket.send_json({"type": "thinking"})
 
-    modification_prompt = f"""원본 레시피:
+    modification_prompt = f"""# 원본 레시피
 {original_recipe_content}
 
-요청: {user_input}
+# 요청
+{user_input}
 
-**규칙:**
-1. 위 레시피만 수정
-2. 재료 제거: "A 빼줘" → A 완전 제거
-3. 재료 대체: "A 말고 B" → A를 B로 교체
-4. 재료 추가: "C 추가" → C 추가 (정확한 양)
-5. **재료 형식: 쉼표 구분, 한 줄, 줄바꿈 금지**
-6. **재료 양 필수 (금지: 약간, 적당량, 조금)**
-7. **소개: 객관적, 포멀 (금지: 이모티콘, "~", "답니다:)")**
-8. 조리법 출력 금지
+# 규칙
+- 위 레시피만 수정
+- "A 빼줘" → A 완전 제거
+- "A 말고 B" → A를 B로 교체
+- "C 추가" → C 추가 (정확한 양)
+- 재료: 쉼표 구분, 한 줄, 양 필수
+- 금지: 약간, 적당량, 조리법 출력
+- 소개: 객관적 포멀 (금지: 이모티콘, ~)
 
-**형식 (제목에 반드시 [ ] 포함):**
-[변경 사항 1줄]
+# 출력 형식 (TOON)
+change: 변경 사항 1줄
+title: [제목]
+info: ⏱️ 시간 | 📊 난이도 | 👥 인분
+intro: 객관적 1줄
+ingredients: 재료1 양, 재료2 양 (한 줄, 쉼표 구분)
 
-**[제목]**
-⏱️ 시간 | 📊 난이도 | 👥 인분
-**소개:** 객관적 1줄 (이모티콘 금지, 포멀하게)
-**재료:** 재료1 양, 재료2 양 (한 줄, 쉼표 구분)
+# 예시
+change: 돼지고기를 참치로 교체
+title: [참치 김치찌개]
+info: ⏱️ 30분 | 📊 초급 | 👥 2인분
+intro: 참치와 김치를 활용한 찌개 요리.
+ingredients: 김치 200g, 참치캔 1개, 두부 1/2모, 대파 1대
 
-**올바른 소개 예시:**
-"딸기와 생크림을 활용한 디저트 케이크."
-"김치와 돼지고기를 활용한 찌개 요리."
-
-**잘못된 소개 (금지):**
-"쫄깃한 면발에 시원한 육수가 별미인 냉우동 입니다."
-"대중적인 레시피를 알려드릴게요 ᄒ.ᄒ"
-
-답변:"""
+TOON:"""
 
     llm = ChatClovaX(model="HCX-003", temperature=0.2, max_tokens=800)
 
@@ -867,17 +865,14 @@ async def chat_websocket(
                         for msg in chat_sessions[session_id]["messages"][-5:]
                     ])
 
-                    question_prompt = f"""요리 전문가로서 질문에 답변하세요.
-
-대화 맥락:
-{chat_history_text}
-
+                    question_prompt = f"""# 요리 전문가 답변
+맥락: {chat_history_text}
 질문: {content}
 
-**규칙:**
-1. 간결하고 명확하게 답변 (2-3문장)
-2. 구체적인 팁이나 대안 제시
-3. 포멀하고 전문적인 톤
+# 규칙
+- 2-3문장, 간결 명확
+- 구체적 팁/대안 제시
+- 포멀 전문적 톤
 
 답변:"""
 

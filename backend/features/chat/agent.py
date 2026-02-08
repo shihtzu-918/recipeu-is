@@ -437,12 +437,12 @@ def create_chat_agent(rag_system):
 
             for i, doc in enumerate(documents, 1):
                 # 각 문서를 간결하게 요약
-                summarize_prompt = f"""질문: {question}
+                summarize_prompt = f"""# 레시피 요약
+질문: {question}
+내용: {doc.page_content[:800]}
 
-내용:
-{doc.page_content[:800]}
-
-**요약 (3문장, 재료/시간/난이도 위주, 광고 제거, 정확한 양 유지):**"""
+# 규칙: 3문장, 재료/시간/난이도 위주, 광고 제거, 정확한 양 유지
+요약:"""
 
                 from langchain_naver import ChatClovaX
                 from langchain_core.messages import HumanMessage
@@ -484,12 +484,11 @@ def create_chat_agent(rag_system):
 
         if constraint_warning:
             try:
-                alt_prompt = f"""{constraint_warning}
+                alt_prompt = f"""# 제약 경고
+{constraint_warning}
 
-    그래도 레시피를 원하시나요?
-    아니면 비슷한 다른 재료로 대체할까요?
-
-    답변:"""
+# 질문: 그래도 원하시나요? 다른 재료로 대체할까요?
+답변:"""
 
                 from langchain_core.messages import HumanMessage
                 result = rag_system.chat_model.invoke([HumanMessage(content=alt_prompt)])
