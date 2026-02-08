@@ -233,6 +233,85 @@ def _parse_recipe_response(response_text: str, servings: int = 1) -> dict:
     # 마크다운 코드 블록 제거
     cleaned = re.sub(r'```(?:json|toon)?\s*|\s*```', '', response_text).strip()
 
+    def _parse_toon_fallback(text: str) -> dict:
+        """간단한 TOON 라인 파서 (toon_format 실패 시 fallback)"""
+        # TOON: 접두 제거
+        if text.startswith("TOON:"):
+            text = text.split("TOON:", 1)[1].strip()
+        lines = [ln.rstrip() for ln in text.splitlines()]
+
+        data: Dict[str, Any] = {
+            "title": "",
+            "intro": "",
+            "cook_time": "",
+            "level": "",
+            "servings": f"{servings}인분",
+            "ingredients": [],
+            "steps": [],
+        }
+        mode = None  # "ingredients" | "steps"
+
+        def is_section_line(line: str) -> bool:
+            return bool(re.match(r'^\s*\w+\s*:', line))
+
+        for raw in lines:
+            line = raw.strip()
+            if not line:
+                continue
+
+            # 섹션 헤더
+            if re.match(r'^ingredients\s*\[', line):
+                mode = "ingredients"
+                continue
+            if re.match(r'^steps\s*\[', line):
+                mode = "steps"
+                continue
+
+            # 키: 값 형태
+            if is_section_line(line):
+                mode = None
+                key, val = line.split(":", 1)
+                key = key.strip()
+                val = val.strip()
+                if key in data:
+                    data[key] = val
+                continue
+
+            # 섹션 내용
+            if mode == "ingredients":
+                item = line.lstrip("-* ").strip()
+                if not item:
+                    continue
+                parts = [p.strip() for p in item.split(",", 2)]
+                if len(parts) >= 2:
+                    name = parts[0]
+                    amount = parts[1]
+                    note = parts[2] if len(parts) >= 3 else ""
+                    data["ingredients"].append(
+                        {"name": name, "amount": amount, "note": note}
+                    )
+                continue
+
+            if mode == "steps":
+                item = line.lstrip("-* ").strip()
+                if not item:
+                    continue
+                if "," in item:
+                    no_str, desc = item.split(",", 1)
+                    no_str = no_str.strip()
+                    desc = desc.strip()
+                else:
+                    m = re.match(r'^(\d+)[\.\)]?\s*(.+)$', item)
+                    if not m:
+                        continue
+                    no_str, desc = m.group(1), m.group(2)
+                data["steps"].append({"no": no_str, "desc": desc})
+
+        # 최소한의 유효성
+        if not data["servings"]:
+            data["servings"] = f"{servings}인분"
+        return data
+
     # 1차: TOON 파싱 시도
     try:
         recipe = toon_decode(cleaned)
@@ -241,6 +320,15 @@ def _parse_recipe_response(response_text: str, servings: int = 1) -> dict:
             return recipe
     except Exception as e:
         print(f"[RecipeService] TOON 파싱 실패: {e}")
+
+    # 1.5차: TOON 간이 파싱 (fallback)
+    try:
+        recipe = _parse_toon_fallback(cleaned)
+        if recipe.get('title') or recipe.get('ingredients') or recipe.get('steps'):
+            print(f"[RecipeService] TOON fallback 파싱 성공")
+            return recipe
+    except Exception as e:
+        print(f"[RecipeService] TOON fallback 파싱 실패: {e}")
 
     # 2차: JSON 파싱 시도 (LLM이 JSON으로 응답한 경우)
     try:
