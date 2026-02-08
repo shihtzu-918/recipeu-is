@@ -701,11 +701,12 @@ def create_chat_agent(rag_system):
                     item = re.sub(r'^[-\*]\s*', '', item).strip()
                     if not item:
                         continue
-                    if any(term in item for term in vague_terms):
-                        print(f"   [후처리] 애매한 표현 포함 재료 제외: {item}")
-                        continue
-                    if not re.search(r'\d+|[가-힣]+스푼|작은술|큰술|컵|개|대|ml|g|kg|L|방울|꼬집', item):
-                        print(f"   [후처리] 양 없는 재료 제외: {item}")
+                    # 애매한 표현은 제거하되 재료명은 유지
+                    for term in vague_terms:
+                        if term in item:
+                            item = item.replace(term, '').strip()
+                            print(f"   [후처리] 애매한 양 표현 제거: '{term}' → 재료명 유지")
+                    if not item:
                         continue
                     filtered_items.append(item)
 
