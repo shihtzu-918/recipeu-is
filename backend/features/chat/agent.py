@@ -636,88 +636,87 @@ def create_chat_agent(rag_system):
                 cleaned_answer = re.sub(pattern, '', cleaned_answer, flags=re.IGNORECASE)
 
             # 소개 문구 정제: 이모티콘, 캐주얼 표현 제거
-            if '**소개:**' in cleaned_answer:
-                # 소개 섹션 추출
-                intro_match = re.search(r'\*\*소개:\*\*\s*(.+?)(?:\n\*\*|$)', cleaned_answer, re.DOTALL)
-                if intro_match:
-                    intro_text = intro_match.group(1).strip()
+            # 소개: 또는 **소개:** 패턴 모두 지원
+            intro_pattern = r'(?:\*\*소개:\*\*|소개\s*:)\s*(.+?)(?:\n(?:\*\*|재료\s*:|$))'
+            intro_match = re.search(intro_pattern, cleaned_answer, re.DOTALL)
+            if intro_match:
+                intro_text = intro_match.group(1).strip()
 
-                    # 이모티콘 제거 (ᄒ.ᄒ, ᄏᄏ, :), ^^, 등)
-                    intro_text = re.sub(r'[ᄀ-ᄒ]{2,}', '', intro_text)  # ᄏᄏ, ᄒᄒ 등
-                    intro_text = re.sub(r'[:;]\)|:\(|:\)|^^|ㅎㅎ|ㅋㅋ', '', intro_text)
+                # 이모티콘 제거 (ᄒ.ᄒ, ᄏᄏ, :), ^^, 등)
+                intro_text = re.sub(r'[ᄀ-ᄒ]{2,}', '', intro_text)  # ᄏᄏ, ᄒᄒ 등
+                intro_text = re.sub(r'[:;]\)|:\(|:\)|^^|ㅎㅎ|ㅋㅋ', '', intro_text)
 
-                    # 캐주얼 표현 제거
-                    casual_phrases = [
-                        r'알려드릴게요[!\s]*',
-                        r'드릴게요[!\s]*',
-                        r'[~]+',
-                        r'요[~]+',
-                        r'답니다[:\s]*\)',
-                        r'하죠[!\s]*',
-                        r'그만큼.*?있답니다',
-                        r'레시피를 알려드릴게요',
-                        r'소개해드릴게요',
-                    ]
-                    for phrase in casual_phrases:
-                        intro_text = re.sub(phrase, '', intro_text)
+                # 캐주얼 표현 제거
+                casual_phrases = [
+                    r'알려드릴게요[!\s]*',
+                    r'드릴게요[!\s]*',
+                    r'[~]+',
+                    r'요[~]+',
+                    r'답니다[:\s]*\)',
+                    r'하죠[!\s]*',
+                    r'그만큼.*?있답니다',
+                    r'레시피를 알려드릴게요',
+                    r'소개해드릴게요',
+                ]
+                for phrase in casual_phrases:
+                    intro_text = re.sub(phrase, '', intro_text)
 
-                    # 다중 공백 정리
-                    intro_text = re.sub(r'\s+', ' ', intro_text).strip()
+                # 다중 공백 정리
+                intro_text = re.sub(r'\s+', ' ', intro_text).strip()
 
-                    # 마침표로 끝나지 않으면 추가
-                    if intro_text and not intro_text.endswith('.'):
-                        intro_text += '.'
+                # 마침표로 끝나지 않으면 추가
+                if intro_text and not intro_text.endswith('.'):
+                    intro_text += '.'
 
-                    # 소개 문구 교체
-                    cleaned_answer = re.sub(
-                        r'\*\*소개:\*\*\s*.+?(?=\n\*\*|$)',
-                        f'**소개:** {intro_text}',
-                        cleaned_answer,
-                        count=1,
-                        flags=re.DOTALL
-                    )
-                    print(f"   [후처리] 소개 정제됨: {intro_text[:50]}...")
+                # 소개 문구 교체 (두 가지 형식 모두 처리)
+                cleaned_answer = re.sub(
+                    r'(?:\*\*소개:\*\*|소개\s*:)\s*.+?(?=\n(?:\*\*|재료\s*:|$))',
+                    f'소개: {intro_text}',
+                    cleaned_answer,
+                    count=1,
+                    flags=re.DOTALL
+                )
+                print(f"   [후처리] 소개 정제됨: {intro_text[:50]}...")
 
             # 재료 형식 정리: 줄바꿈 제거, 쉼표로 변환
             # "- 재료명 양" 형식을 "재료명 양," 형식으로 변환
-            if '**재료:**' in cleaned_answer:
-                # 재료 섹션 추출
-                parts = cleaned_answer.split('**재료:**')
-                if len(parts) == 2:
-                    before_ingredients = parts[0]
-                    ingredients_section = parts[1].strip()
+            # **재료:** 또는 재료: 패턴 모두 지원
+            ingredients_split_pattern = re.split(r'(?:\*\*재료:\*\*|재료\s*:)', cleaned_answer)
+            if len(ingredients_split_pattern) == 2:
+                before_ingredients = ingredients_split_pattern[0]
+                ingredients_section = ingredients_split_pattern[1].strip()
 
-                    # 줄바꿈으로 구분된 재료들을 쉼표로 변환
-                    # "- 재료명 양" → "재료명 양"
-                    ingredients_lines = []
-                    for line in ingredients_section.split('\n'):
-                        line = line.strip()
-                        if line and not line.startswith('**'):  # 다음 섹션 시작 전까지
-                            # "- " 제거
-                            line = re.sub(r'^[-\*]\s*', '', line)
-                            if line:
-                                # "약간", "적당량" 등 애매한 표현 포함 시 제외
-                                vague_terms = ['약간', '적당량', '조금', '넉넉히', '충분히', '적절히', '취향껏', '소량', '다량']
-                                if any(term in line for term in vague_terms):
-                                    print(f"   [후처리] 애매한 표현 포함 재료 제외: {line}")
-                                    continue
+                # 줄바꿈으로 구분된 재료들을 쉼표로 변환
+                # "- 재료명 양" → "재료명 양"
+                ingredients_lines = []
+                for line in ingredients_section.split('\n'):
+                    line = line.strip()
+                    if line and not line.startswith('**'):  # 다음 섹션 시작 전까지
+                        # "- " 제거
+                        line = re.sub(r'^[-\*]\s*', '', line)
+                        if line:
+                            # "약간", "적당량" 등 애매한 표현 포함 시 제외
+                            vague_terms = ['약간', '적당량', '조금', '넉넉히', '충분히', '적절히', '취향껏', '소량', '다량']
+                            if any(term in line for term in vague_terms):
+                                print(f"   [후처리] 애매한 표현 포함 재료 제외: {line}")
+                                continue
 
-                                # 양이 없는 재료 필터링 (데코, 토핑 등)
-                                # 숫자나 양 단위가 없으면 제외
-                                if not re.search(r'\d+|[가-힣]+스푼|작은술|큰술|컵|개|대|ml|g|kg|L|방울|꼬집', line):
-                                    print(f"   [후처리] 양 없는 재료 제외: {line}")
-                                    continue
-                                ingredients_lines.append(line)
-                        elif line.startswith('**'):
-                            # 다음 섹션 발견, 중단
-                            break
+                            # 양이 없는 재료 필터링 (데코, 토핑 등)
+                            # 숫자나 양 단위가 없으면 제외
+                            if not re.search(r'\d+|[가-힣]+스푼|작은술|큰술|컵|개|대|ml|g|kg|L|방울|꼬집', line):
+                                print(f"   [후처리] 양 없는 재료 제외: {line}")
+                                continue
+                            ingredients_lines.append(line)
+                    elif line.startswith('**'):
+                        # 다음 섹션 발견, 중단
+                        break
 
-                    # 쉼표로 연결
-                    ingredients_text = ', '.join(ingredients_lines)
+                # 쉼표로 연결
+                ingredients_text = ', '.join(ingredients_lines)
 
-                    # 재구성
-                    cleaned_answer = f"{before_ingredients}**재료:** {ingredients_text}"
-                    print(f"   [후처리] 재료 형식 정리됨")
+                # 재구성
+                cleaned_answer = f"{before_ingredients}재료: {ingredients_text}"
+                print(f"   [후처리] 재료 형식 정리됨")
 
             print(f"   생성 완료: {cleaned_answer[:50]}...")
             return {"generation": cleaned_answer}

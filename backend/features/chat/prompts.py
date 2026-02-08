@@ -113,18 +113,18 @@ GENERATE_PROMPT = PromptTemplate(
 - 소개: 객관적 포멀 (금지: 이모티콘, ~, 알려드릴게요)
 - 조리법 출력 금지
 
-# 출력 형식 (TOON)
-title: [요리명]
-info: ⏱️ XX분 | 📊 난이도 | 👥 {servings}인분
-intro: 객관적 1줄
-ingredients: 재료1 양, 재료2 양 (한 줄, 쉼표 구분)
+# 출력 형식
+요리명
+⏱️ XX분 | 📊 난이도 | 👥 {servings}인분
+소개: 객관적 1줄
+재료: 재료1 양, 재료2 양 (한 줄, 쉼표 구분)
 
 # 예시
-title: [딸기 케이크]
-info: ⏱️ 30분 | 📊 초급 | 👥 {servings}인분
-intro: 딸기와 생크림을 활용한 디저트 케이크.
-ingredients: 딸기 300g, 생크림 200ml, 설탕 50g
+딸기 케이크
+⏱️ 30분 | 📊 초급 | 👥 {servings}인분
+소개: 딸기와 생크림을 활용한 디저트 케이크.
+재료: 딸기 300g, 생크림 200ml, 설탕 50g
 
-TOON:""",
+출력:""",
     input_variables=["context", "history", "question", "servings", "modification_constraints"]
 )

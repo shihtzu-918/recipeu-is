@@ -88,21 +88,21 @@ async def handle_recipe_modification(websocket: WebSocket, session: Dict, user_i
 - 금지: 약간, 적당량, 조리법 출력
 - 소개: 객관적 포멀 (금지: 이모티콘, ~)
 
-# 출력 형식 (TOON)
-change: 변경 사항 1줄
-title: [제목]
-info: ⏱️ 시간 | 📊 난이도 | 👥 인분
-intro: 객관적 1줄
-ingredients: 재료1 양, 재료2 양 (한 줄, 쉼표 구분)
+# 출력 형식
+변경: 변경 사항 1줄
+요리명
+⏱️ 시간 | 📊 난이도 | 👥 인분
+소개: 객관적 1줄
+재료: 재료1 양, 재료2 양 (한 줄, 쉼표 구분)
 
 # 예시
-change: 돼지고기를 참치로 교체
-title: [참치 김치찌개]
-info: ⏱️ 30분 | 📊 초급 | 👥 2인분
-intro: 참치와 김치를 활용한 찌개 요리.
-ingredients: 김치 200g, 참치캔 1개, 두부 1/2모, 대파 1대
+변경: 돼지고기를 참치로 교체
+참치 김치찌개
+⏱️ 30분 | 📊 초급 | 👥 2인분
+소개: 참치와 김치를 활용한 찌개 요리.
+재료: 김치 200g, 참치캔 1개, 두부 1/2모, 대파 1대
 
-TOON:"""
+출력:"""
 
     llm = ChatClovaX(model="HCX-003", temperature=0.2, max_tokens=800)
 
@@ -120,69 +120,70 @@ TOON:"""
         import re
 
         # 재료 형식 정리: 줄바꿈 제거, 쉼표로 변환
-        if '**재료:**' in modified_recipe:
-            parts = modified_recipe.split('**재료:**')
-            if len(parts) == 2:
-                before_ingredients = parts[0]
-                ingredients_section = parts[1].strip()
+        # **재료:** 또는 재료: 패턴 모두 지원
+        ingredients_split = re.split(r'(?:\*\*재료:\*\*|재료\s*:)', modified_recipe)
+        if len(ingredients_split) == 2:
+            before_ingredients = ingredients_split[0]
+            ingredients_section = ingredients_split[1].strip()
 
-                ingredients_lines = []
-                for line in ingredients_section.split('\n'):
-                    line = line.strip()
-                    if line and not line.startswith('**'):
-                        line = re.sub(r'^[-\*]\s*', '', line)
-                        if line:
-                            # "약간", "적당량" 등 애매한 표현 포함 시 제외
-                            vague_terms = ['약간', '적당량', '조금', '넉넉히', '충분히', '적절히', '취향껏', '소량', '다량']
-                            if any(term in line for term in vague_terms):
-                                logger.info(f"[WS] 애매한 표현 포함 재료 제외: {line}")
-                                continue
+            ingredients_lines = []
+            for line in ingredients_section.split('\n'):
+                line = line.strip()
+                if line and not line.startswith('**'):
+                    line = re.sub(r'^[-\*]\s*', '', line)
+                    if line:
+                        # "약간", "적당량" 등 애매한 표현 포함 시 제외
+                        vague_terms = ['약간', '적당량', '조금', '넉넉히', '충분히', '적절히', '취향껏', '소량', '다량']
+                        if any(term in line for term in vague_terms):
+                            logger.info(f"[WS] 애매한 표현 포함 재료 제외: {line}")
+                            continue
 
-                            # 양이 없는 재료 필터링
-                            if not re.search(r'\d+|[가-힣]+스푼|작은술|큰술|컵|개|대|ml|g|kg|L|방울|꼬집', line):
-                                logger.info(f"[WS] 양 없는 재료 제외: {line}")
-                                continue
-                            ingredients_lines.append(line)
-                    elif line.startswith('**'):
-                        break
+                        # 양이 없는 재료 필터링
+                        if not re.search(r'\d+|[가-힣]+스푼|작은술|큰술|컵|개|대|ml|g|kg|L|방울|꼬집', line):
+                            logger.info(f"[WS] 양 없는 재료 제외: {line}")
+                            continue
+                        ingredients_lines.append(line)
+                elif line.startswith('**'):
+                    break
 
-                ingredients_text = ', '.join(ingredients_lines)
-                modified_recipe = f"{before_ingredients}**재료:** {ingredients_text}"
-                logger.info("[WS] 재료 형식 정리 완료")
+            ingredients_text = ', '.join(ingredients_lines)
+            modified_recipe = f"{before_ingredients}재료: {ingredients_text}"
+            logger.info("[WS] 재료 형식 정리 완료")
 
         # 소개 문구 정제
-        if '**소개:**' in modified_recipe:
-            intro_match = re.search(r'\*\*소개:\*\*\s*(.+?)(?:\n\*\*|$)', modified_recipe, re.DOTALL)
-            if intro_match:
-                intro_text = intro_match.group(1).strip()
+        # **소개:** 또는 소개: 패턴 모두 지원
+        intro_pattern = r'(?:\*\*소개:\*\*|소개\s*:)\s*(.+?)(?:\n(?:\*\*|재료\s*:|$))'
+        intro_match = re.search(intro_pattern, modified_recipe, re.DOTALL)
+        if intro_match:
+            intro_text = intro_match.group(1).strip()
 
-                # 이모티콘 제거 (ᄒ.ᄒ, ᄏᄏ, :), ^^, 등)
-                intro_text = re.sub(r'[ᄀ-ᄒ]{2,}', '', intro_text)
-                intro_text = re.sub(r'[:;]\)|:\(|:\)|^^|ㅎㅎ|ㅋㅋ', '', intro_text)
+            # 이모티콘 제거 (ᄒ.ᄒ, ᄏᄏ, :), ^^, 등)
+            intro_text = re.sub(r'[ᄀ-ᄒ]{2,}', '', intro_text)
+            intro_text = re.sub(r'[:;]\)|:\(|:\)|^^|ㅎㅎ|ㅋㅋ', '', intro_text)
 
-                # 캐주얼 표현 제거
-                casual_phrases = [
-                    r'알려드릴게요[!\s]*', r'드릴게요[!\s]*', r'[~]+', r'요[~]+',
-                    r'답니다[:\s]*\)', r'하죠[!\s]*', r'그만큼.*?있답니다',
-                    r'레시피를 알려드릴게요', r'소개해드릴게요',
-                ]
-                for phrase in casual_phrases:
-                    intro_text = re.sub(phrase, '', intro_text)
+            # 캐주얼 표현 제거
+            casual_phrases = [
+                r'알려드릴게요[!\s]*', r'드릴게요[!\s]*', r'[~]+', r'요[~]+',
+                r'답니다[:\s]*\)', r'하죠[!\s]*', r'그만큼.*?있답니다',
+                r'레시피를 알려드릴게요', r'소개해드릴게요',
+            ]
+            for phrase in casual_phrases:
+                intro_text = re.sub(phrase, '', intro_text)
 
-                # 다중 공백 정리
-                intro_text = re.sub(r'\s+', ' ', intro_text).strip()
-                if intro_text and not intro_text.endswith('.'):
-                    intro_text += '.'
+            # 다중 공백 정리
+            intro_text = re.sub(r'\s+', ' ', intro_text).strip()
+            if intro_text and not intro_text.endswith('.'):
+                intro_text += '.'
 
-                # 소개 문구 교체
-                modified_recipe = re.sub(
-                    r'\*\*소개:\*\*\s*.+?(?=\n\*\*|$)',
-                    f'**소개:** {intro_text}',
-                    modified_recipe,
-                    count=1,
-                    flags=re.DOTALL
-                )
-                logger.info(f"[WS] 소개 정제됨: {intro_text[:50]}...")
+            # 소개 문구 교체 (두 가지 형식 모두 처리)
+            modified_recipe = re.sub(
+                r'(?:\*\*소개:\*\*|소개\s*:)\s*.+?(?=\n(?:\*\*|재료\s*:|$))',
+                f'소개: {intro_text}',
+                modified_recipe,
+                count=1,
+                flags=re.DOTALL
+            )
+            logger.info(f"[WS] 소개 정제됨: {intro_text[:50]}...")
 
         logger.info("[WS] 레시피 수정 완료")
 
