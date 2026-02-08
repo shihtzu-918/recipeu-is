@@ -33,20 +33,18 @@ def detect_intent(text: str) -> str:
 
     start_time = time.time()
 
-    prompt = f"""조리 중 의도 분류:
-
+    prompt = f"""# 조리 의도 분류
 입력: {text}
 
-분류:
-1. NEXT - 다음 단계로
-2. PREV - 이전 단계로
-3. SUB_ING - 재료 대체
-4. SUB_TOOL - 도구 대체
-5. FAILURE - 조리 실패
-6. UNKNOWN - 기타
+분류[6]{{key,desc}}:
+  NEXT,다음 단계
+  PREV,이전 단계
+  SUB_ING,재료 대체
+  SUB_TOOL,도구 대체
+  FAILURE,조리 실패
+  UNKNOWN,기타
 
-**출력 형식: 분류 키워드만 1개 출력**
-출력:"""
+출력(키워드 1개):"""
 
     try:
         llm = ChatClovaX(model="HCX-003", temperature=0.1, max_tokens=20)
@@ -141,27 +139,22 @@ def extract_allergy_dislike(text: str, chat_history: list = None) -> dict:
         print(f"[AllergyDetect] 레시피 존재 + 수정 키워드 감지 → RECIPE_MODIFY 의도로 판단, 알러지 감지 스킵")
         return {"type": None, "items": [], "original_text": text}
 
-    prompt = f"""사용자가 **직접적으로** 알러지나 비선호 음식을 언급했는지 분석:
-
+    prompt = f"""# 알러지/비선호 감지
 입력: "{text}"
 
-**중요: 단순 메뉴 언급이나 레시피 수정 요청은 NONE!**
-- "고수덮밥 먹을까" → NONE (메뉴 질문일 뿐)
-- "후추 빼고" → NONE (레시피 수정 요청)
-- "나 고수 싫어해" → DISLIKE (개인 선호 명시)
-- "새우 알러지 있어" → ALLERGY (알러지 명시)
+# 중요: 메뉴 언급/수정 요청은 NONE
+예시[4]{{input,result}}:
+  고수덮밥 먹을까,NONE
+  후추 빼고,NONE
+  나 고수 싫어해,DISLIKE
+  새우 알러지 있어,ALLERGY
 
-**분류:**
-1. ALLERGY - 알러지/알레르기 **명시적 진술**
-   예: "나 땅콩 알러지 있어", "새우 못먹어", "우유 먹으면 배아파"
+# 분류
+ALLERGY: 알러지 명시적 진술 (못먹어/배아파)
+DISLIKE: 비선호 명시적 진술 (싫어해/안먹어)
+NONE: 해당 없음
 
-2. DISLIKE - 싫어하는 음식 **명시적 진술**
-   예: "나 파 싫어해", "고수 안먹어"
-
-3. NONE - 알러지/비선호 아님
-   예: "~~ 먹을까", "~~ 어때", "~~ 만들어줘"
-
-**출력 형식: 아래 형식으로만 출력**
+# 출력
 타입: ALLERGY 또는 DISLIKE 또는 NONE
 재료: 재료1, 재료2 (없으면 "없음")"""
 
@@ -310,24 +303,19 @@ def extract_ingredients_from_modification(text: str, mod_type: str = "remove") -
 
     # Replace 타입일 때는 구분하여 추출
     if mod_type == "replace":
-        prompt = f"""사용자의 레시피 수정 요청을 분석하세요.
-
+        prompt = f"""# 재료 교체 추출
 입력: "{text}"
 
-**규칙:**
-1. "A 말고 B" 패턴에서 A는 제거, B는 추가
-2. 재료명만 추출 (조사, 동사 제거)
+# 규칙: "A 말고 B" → A 제거, B 추가 (재료명만)
 
-**출력 형식:**
-제거: 재료명
-추가: 재료명
-
-예시:
-입력: "돼지고기 말고 참치 넣어줘"
+# 예시
+입력: 돼지고기 말고 참치 넣어줘
 제거: 돼지고기
 추가: 참치
 
-출력:"""
+# 출력
+제거:
+추가:"""
 
         try:
             llm = ChatClovaX(model="HCX-003", temperature=0.1, max_tokens=50)
@@ -377,22 +365,17 @@ def extract_ingredients_from_modification(text: str, mod_type: str = "remove") -
 
     # Remove/Add 타입일 때는 기존 로직
     else:
-        prompt = f"""사용자의 레시피 수정 요청에서 음식 재료명만 추출하세요.
-
+        prompt = f"""# 재료명 추출
 입력: "{text}"
 
-**규칙:**
-1. 음식 재료명만 추출 (조사, 동사, 장소 제거)
-2. 여러 재료면 모두 추출
-3. 재료가 없으면 "없음"
+# 규칙: 재료명만 추출 (조사/동사/장소 제거), 없으면 "없음"
 
-**출력 형식: 재료명만 쉼표로 구분**
-예시:
-- "참치 빼줘" → 참치
-- "집에 간장이 없어" → 간장
-- "오이 집에 없어 빼줘" → 오이
-- "딸기, 블루베리 추가해줘" → 딸기, 블루베리
-- "알려줘" → 없음
+# 예시[5]{{input,output}}:
+  참치 빼줘,참치
+  집에 간장이 없어,간장
+  오이 집에 없어 빼줘,오이
+  딸기 블루베리 추가해줘,"딸기, 블루베리"
+  알려줘,없음
 
 재료:"""
 
@@ -483,32 +466,20 @@ def detect_chat_intent(text: str, chat_history: list = None) -> str:
                     has_recipe = True
                     break  # 레시피 발견하면 중단
 
-    # LLM 프롬프트 (간결하고 명확하게)
-    prompt = f"""의도 분류:
-
+    # LLM 프롬프트 (TOON 형식)
+    prompt = f"""# 채팅 의도 분류
 입력: "{text}"
 레시피: {"Y" if has_recipe else "N"}
 
-**중요: 음식/요리 키워드 없으면 무조건 NOT_COOKING**
+# 중요: 음식/요리 키워드 없으면 NOT_COOKING
 
-분류:
-1. NOT_COOKING (음식/요리 무관)
-   예: "날씨", "영화", "여행", "제주도", "운동", "음악"
-   → 음식/요리 키워드 없으면 무조건 이것
+분류[4]{{key,조건,예시}}:
+  NOT_COOKING,음식/요리 무관,"날씨/영화/여행/운동"
+  RECIPE_MODIFY,레시피=Y+수정요청,"빼줘/말고/더 맵게/없어/없는데"
+  RECIPE_SEARCH,음식관련+레시피=N,"김치찌개/케이크/빵"
+  COOKING_QUESTION,요리 지식,"보관법/칼로리/대체재료"
 
-2. RECIPE_MODIFY (레시피=Y + 재료 수정/제거)
-   예: "딸기 빼줘", "A 말고 B", "더 맵게"
-   **중요: "집에 [재료] 없어", "[재료] 없는데", "[재료]가 없다" → RECIPE_MODIFY**
-   예: "집에 오이가 없어", "간장이 없는데", "참치 없다"
-
-3. RECIPE_SEARCH (음식/요리 관련, 레시피=N)
-   예: "김치찌개", "케이크 먹을까", "빵"
-
-4. COOKING_QUESTION (요리 지식)
-   예: "보관법", "칼로리", "쯔유 대신 간장?"
-
-**출력 형식: 분류 키워드만 1개 출력 (설명 없이)**
-출력:"""
+출력(키워드 1개):"""
 
     try:
         llm = ChatClovaX(model="HCX-003", temperature=0.1, max_tokens=20)
