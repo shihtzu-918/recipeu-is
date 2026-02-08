@@ -119,36 +119,40 @@ async def handle_recipe_modification(websocket: WebSocket, session: Dict, user_i
         # 후처리: 재료 형식 정리 및 애매한 표현 제거
         import re
 
-        # 재료 형식 정리: 줄바꿈 제거, 쉼표로 변환
+        # 재료 형식 정리: 개별 재료 항목별 필터링
         # **재료:** 또는 재료: 패턴 모두 지원
         ingredients_split = re.split(r'(?:\*\*재료:\*\*|재료\s*:)', modified_recipe)
         if len(ingredients_split) == 2:
             before_ingredients = ingredients_split[0]
             ingredients_section = ingredients_split[1].strip()
 
-            ingredients_lines = []
-            for line in ingredients_section.split('\n'):
-                line = line.strip()
-                if line and not line.startswith('**'):
-                    line = re.sub(r'^[-\*]\s*', '', line)
-                    if line:
-                        # "약간", "적당량" 등 애매한 표현 포함 시 제외
-                        vague_terms = ['약간', '적당량', '조금', '넉넉히', '충분히', '적절히', '취향껏', '소량', '다량']
-                        if any(term in line for term in vague_terms):
-                            logger.info(f"[WS] 애매한 표현 포함 재료 제외: {line}")
-                            continue
+            # 다음 섹션(**) 이전까지만 추출
+            next_section = re.search(r'\n\*\*', ingredients_section)
+            if next_section:
+                ingredients_section = ingredients_section[:next_section.start()]
 
-                        # 양이 없는 재료 필터링
-                        if not re.search(r'\d+|[가-힣]+스푼|작은술|큰술|컵|개|대|ml|g|kg|L|방울|꼬집', line):
-                            logger.info(f"[WS] 양 없는 재료 제외: {line}")
-                            continue
-                        ingredients_lines.append(line)
-                elif line.startswith('**'):
-                    break
+            # 줄바꿈 → 쉼표로 통합 후, 개별 재료 항목으로 분리
+            raw_text = ingredients_section.replace('\n', ',')
+            raw_text = re.sub(r'^[-\*]\s*', '', raw_text)
+            raw_items = [item.strip() for item in raw_text.split(',') if item.strip()]
 
-            ingredients_text = ', '.join(ingredients_lines)
+            vague_terms = ['약간', '적당량', '조금', '넉넉히', '충분히', '적절히', '취향껏', '소량', '다량']
+            filtered_items = []
+            for item in raw_items:
+                item = re.sub(r'^[-\*]\s*', '', item).strip()
+                if not item:
+                    continue
+                if any(term in item for term in vague_terms):
+                    logger.info(f"[WS] 애매한 표현 포함 재료 제외: {item}")
+                    continue
+                if not re.search(r'\d+|[가-힣]+스푼|작은술|큰술|컵|개|대|ml|g|kg|L|방울|꼬집', item):
+                    logger.info(f"[WS] 양 없는 재료 제외: {item}")
+                    continue
+                filtered_items.append(item)
+
+            ingredients_text = ', '.join(filtered_items)
             modified_recipe = f"{before_ingredients}재료: {ingredients_text}"
-            logger.info("[WS] 재료 형식 정리 완료")
+            logger.info(f"[WS] 재료 형식 정리 완료 ({len(filtered_items)}개 항목)")
 
         # 소개 문구 정제
         # **소개:** 또는 소개: 패턴 모두 지원

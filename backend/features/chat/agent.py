@@ -678,45 +678,40 @@ def create_chat_agent(rag_system):
                 )
                 print(f"   [후처리] 소개 정제됨: {intro_text[:50]}...")
 
-            # 재료 형식 정리: 줄바꿈 제거, 쉼표로 변환
-            # "- 재료명 양" 형식을 "재료명 양," 형식으로 변환
+            # 재료 형식 정리: 개별 재료 항목별 필터링
             # **재료:** 또는 재료: 패턴 모두 지원
             ingredients_split_pattern = re.split(r'(?:\*\*재료:\*\*|재료\s*:)', cleaned_answer)
             if len(ingredients_split_pattern) == 2:
                 before_ingredients = ingredients_split_pattern[0]
                 ingredients_section = ingredients_split_pattern[1].strip()
 
-                # 줄바꿈으로 구분된 재료들을 쉼표로 변환
-                # "- 재료명 양" → "재료명 양"
-                ingredients_lines = []
-                for line in ingredients_section.split('\n'):
-                    line = line.strip()
-                    if line and not line.startswith('**'):  # 다음 섹션 시작 전까지
-                        # "- " 제거
-                        line = re.sub(r'^[-\*]\s*', '', line)
-                        if line:
-                            # "약간", "적당량" 등 애매한 표현 포함 시 제외
-                            vague_terms = ['약간', '적당량', '조금', '넉넉히', '충분히', '적절히', '취향껏', '소량', '다량']
-                            if any(term in line for term in vague_terms):
-                                print(f"   [후처리] 애매한 표현 포함 재료 제외: {line}")
-                                continue
+                # 다음 섹션(**) 이전까지만 추출
+                next_section = re.search(r'\n\*\*', ingredients_section)
+                if next_section:
+                    ingredients_section = ingredients_section[:next_section.start()]
 
-                            # 양이 없는 재료 필터링 (데코, 토핑 등)
-                            # 숫자나 양 단위가 없으면 제외
-                            if not re.search(r'\d+|[가-힣]+스푼|작은술|큰술|컵|개|대|ml|g|kg|L|방울|꼬집', line):
-                                print(f"   [후처리] 양 없는 재료 제외: {line}")
-                                continue
-                            ingredients_lines.append(line)
-                    elif line.startswith('**'):
-                        # 다음 섹션 발견, 중단
-                        break
+                # 줄바꿈 → 쉼표로 통합 후, 개별 재료 항목으로 분리
+                raw_text = ingredients_section.replace('\n', ',')
+                raw_text = re.sub(r'^[-\*]\s*', '', raw_text)  # "- " 제거
+                raw_items = [item.strip() for item in raw_text.split(',') if item.strip()]
 
-                # 쉼표로 연결
-                ingredients_text = ', '.join(ingredients_lines)
+                vague_terms = ['약간', '적당량', '조금', '넉넉히', '충분히', '적절히', '취향껏', '소량', '다량']
+                filtered_items = []
+                for item in raw_items:
+                    item = re.sub(r'^[-\*]\s*', '', item).strip()
+                    if not item:
+                        continue
+                    if any(term in item for term in vague_terms):
+                        print(f"   [후처리] 애매한 표현 포함 재료 제외: {item}")
+                        continue
+                    if not re.search(r'\d+|[가-힣]+스푼|작은술|큰술|컵|개|대|ml|g|kg|L|방울|꼬집', item):
+                        print(f"   [후처리] 양 없는 재료 제외: {item}")
+                        continue
+                    filtered_items.append(item)
 
-                # 재구성
+                ingredients_text = ', '.join(filtered_items)
                 cleaned_answer = f"{before_ingredients}재료: {ingredients_text}"
-                print(f"   [후처리] 재료 형식 정리됨")
+                print(f"   [후처리] 재료 형식 정리됨 ({len(filtered_items)}개 항목)")
 
             print(f"   생성 완료: {cleaned_answer[:50]}...")
             return {"generation": cleaned_answer}
