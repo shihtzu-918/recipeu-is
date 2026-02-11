@@ -38,6 +38,3 @@ polars
 motor
 
 kiwipiepy
-
-# TOON format (Token-Oriented Object Notation)
-toon_format @ git+https://github.com/toon-format/toon-python.git

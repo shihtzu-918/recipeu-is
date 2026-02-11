@@ -7,6 +7,7 @@ import time
 from typing import TypedDict, List, Literal
 from langgraph.graph import StateGraph, END
 from langchain_core.documents import Document
+from langchain_core.output_parsers import StrOutputParser
 
 # prompts.py에서 프롬프트 import
 from .prompts import REWRITE_PROMPT, GRADE_PROMPT, GENERATE_PROMPT
@@ -70,20 +71,8 @@ def print_token_usage(response, context_name: str = "LLM"):
         print(f"📊 총 토큰 (total):        {total_tokens:,} tokens")
         print(f"🔍 토큰 소스: {source}")
     else:
-        # ⚠️ usage가 없을 때도 일단 0으로 집계에 포함 (누락 방지)
-        print(f"⚠️  토큰 사용량 정보를 찾을 수 없습니다. (집계 누락 가능)")
-        print(f"🔍 토큰 소스: ❌ NOT FOUND")
-
-        # 노드는 등록하되 토큰은 0으로
-        if context_name not in _node_tokens:
-            _node_tokens[context_name] = {"prompt": 0, "completion": 0, "total": 0}
-
-        print(f"📥 입력 토큰 (prompt):     ❌ 측정 불가")
-        print(f"📤 출력 토큰 (completion): ❌ 측정 불가")
-        print(f"📊 총 토큰 (total):        ❌ 측정 불가")
-
-        # 디버깅용
-        print(f"응답 객체 타입: {type(response)}")
+        print(f"⚠️  토큰 사용량 정보를 찾을 수 없습니다.")
+        print(f"응답 객체 속성: {dir(response)}")
         if hasattr(response, 'response_metadata'):
             print(f"response_metadata: {response.response_metadata}")
         if hasattr(response, 'usage_metadata'):
@@ -110,33 +99,24 @@ def print_token_summary():
     print("| Step | Node | 설명 | Prompt Tokens | Completion Tokens | Total Tokens | Latency(s) |")
     print("|------|------|------|---------------|-------------------|--------------|------------|")
 
-    # 노드 순서 및 메타데이터 정의 (timing_key 중복 노드 제거)
-    node_order = ["채팅 의도 감지", "관련성 체크", "쿼리 재작성", "retrieve", "check_constraints", "관련성 평가", "web_search", "답변 생성"]
+    # 노드 순서 및 메타데이터 정의
+    node_order = ["관련성 체크", "쿼리 재작성", "retrieve", "check_constraints", "관련성 평가", "web_search", "제약 조건 경고", "답변 생성"]
     node_metadata = {
-        "채팅 의도 감지": {"step": "-", "desc": "채팅 의도 감지", "timing_key": "채팅 의도 감지"},
         "관련성 체크": {"step": "0", "desc": "레시피 관련성 체크", "timing_key": "check_relevance"},
         "쿼리 재작성": {"step": "1", "desc": "쿼리 재작성", "timing_key": "rewrite"},
         "retrieve": {"step": "2", "desc": "RAG 검색", "timing_key": "retrieve"},
         "check_constraints": {"step": "2.5", "desc": "제약 조건 체크", "timing_key": "check_constraints"},
         "관련성 평가": {"step": "3", "desc": "문서 관련성 평가", "timing_key": "grade"},
         "web_search": {"step": "4", "desc": "웹 검색", "timing_key": "web_search"},
+        "제약 조건 경고": {"step": "5a", "desc": "제약 조건 경고", "timing_key": "generate"},
         "답변 생성": {"step": "5", "desc": "답변 생성", "timing_key": "generate"},
     }
 
-    # timing_key 중복 방지 및 노드 순서대로 출력
-    printed_nodes = set()
-    printed_timing_keys = set()
-
+    # 노드 순서대로 출력
     for node_name in node_order:
         tokens = _node_tokens.get(node_name, {"prompt": 0, "completion": 0, "total": 0})
         meta = node_metadata.get(node_name, {"step": "-", "desc": node_name, "timing_key": node_name})
-        timing_key = meta["timing_key"]
-
-        # 이미 출력된 timing_key이고 토큰이 없으면 스킵 (중복 방지)
-        if timing_key in printed_timing_keys and tokens["total"] == 0:
-            continue
-
-        timing_ms = _node_timings.get(timing_key, 0)
+        timing_ms = _node_timings.get(meta["timing_key"], 0)
         timing_sec = timing_ms / 1000 if timing_ms else 0
 
         if tokens["total"] > 0 or timing_sec > 0:
@@ -145,23 +125,6 @@ def print_token_summary():
             total_str = str(tokens["total"]) if tokens["total"] > 0 else "-"
             latency_str = f"{timing_sec:.1f}" if timing_sec > 0 else "-"
             print(f"| {meta['step']} | {node_name} | {meta['desc']} | {prompt_str} | {completion_str} | {total_str} | {latency_str} |")
-            printed_nodes.add(node_name)
-            printed_timing_keys.add(timing_key)
-
-    # 2) node_order에 없지만 기록된 노드들 출력 (메타데이터 활용)
-    for node_name, tokens in _node_tokens.items():
-        if node_name not in printed_nodes:
-            meta = node_metadata.get(node_name, {"step": "-", "desc": node_name, "timing_key": node_name})
-            timing_ms = _node_timings.get(node_name, 0)
-            timing_sec = timing_ms / 1000 if timing_ms else 0
-
-            if tokens["total"] > 0 or timing_sec > 0:
-                prompt_str = str(tokens["prompt"]) if tokens["prompt"] > 0 else "-"
-                completion_str = str(tokens["completion"]) if tokens["completion"] > 0 else "-"
-                total_str = str(tokens["total"]) if tokens["total"] > 0 else "-"
-                latency_str = f"{timing_sec:.1f}" if timing_sec > 0 else "-"
-                print(f"| {meta['step']} | {node_name} | {meta['desc']} | {prompt_str} | {completion_str} | {total_str} | {latency_str} |")
-                printed_nodes.add(node_name)
 
     # 2) 전체 합계 요약 표 (마크다운)
     print("\n- 📊 전체 합계 요약\n")
@@ -176,29 +139,15 @@ def print_token_summary():
         print("|------|------|------------|------|")
 
         # 동작 플로우 순서 정의
-        node_order = ["채팅 의도 감지", "check_relevance", "rewrite", "retrieve", "check_constraints", "grade", "web_search", "generate"]
+        node_order = ["check_relevance", "rewrite", "retrieve", "check_constraints", "grade", "web_search", "generate"]
         total_time = sum(_node_timings.values())
 
-        printed_timing_nodes = set()
-        order_counter = 1
-
-        # node_order에 있는 노드 먼저 출력
-        for node_name in node_order:
+        for order, node_name in enumerate(node_order, 1):
             ms = _node_timings.get(node_name, 0)
             if ms > 0:
                 sec = ms / 1000
                 ratio = (ms / total_time * 100) if total_time > 0 else 0
-                print(f"| {order_counter} | {node_name} | {sec:.1f} | ~{ratio:.0f}% |")
-                printed_timing_nodes.add(node_name)
-                order_counter += 1
-
-        # node_order에 없는 노드들도 출력 (채팅 의도 감지, 레시피 수정 등)
-        for node_name, ms in _node_timings.items():
-            if node_name not in printed_timing_nodes and ms > 0:
-                sec = ms / 1000
-                ratio = (ms / total_time * 100) if total_time > 0 else 0
-                print(f"| {order_counter} | {node_name} | {sec:.1f} | ~{ratio:.0f}% |")
-                order_counter += 1
+                print(f"| {order} | {node_name} | {sec:.1f} | ~{ratio:.0f}% |")
 
         # 총 소요 시간 추가
         total_sec = total_time / 1000
@@ -252,7 +201,7 @@ def create_chat_agent(rag_system):
     search_engine = os.getenv("SEARCH_ENGINE", "serper")
     search_service = get_search_service(search_engine)
     print(f"[Agent] 검색 엔진: {search_engine}")
-
+    
     # ===== 노드 함수 =====
 
     def rewrite_query(state: ChatAgentState) -> ChatAgentState:
@@ -266,8 +215,8 @@ def create_chat_agent(rag_system):
 
         try:
             from langchain_naver import ChatClovaX
-            llm = ChatClovaX(model="HCX-003", temperature=0.1, max_tokens=50)
-            chain = REWRITE_PROMPT | llm
+            llm = ChatClovaX(model="HCX-DASH-001", temperature=0.2, max_tokens=50)
+            chain = REWRITE_PROMPT | llm | StrOutputParser()
             better_question = chain.invoke({
                 "history": formatted_history,
                 "question": question
@@ -275,10 +224,15 @@ def create_chat_agent(rag_system):
             print_token_usage(better_question, "쿼리 재작성")
 
             print(f"   원본: {question}")
-            print(f"   재작성: {better_question.content}")
+            print(f"   재작성: {better_question}")
+
+            # 재작성 결과가 원본보다 3배 이상 길거나 문장형이면 원본 사용
+            if len(better_question) > len(question) * 3 or any(kw in better_question for kw in ["확인되지", "않습니다", "말씀하신", "궁금하신"]):
+                print(f"   재작성 결과 이상 → 원본 사용")
+                better_question = question
 
             return {
-                "question": better_question.content,
+                "question": better_question,
                 "original_question": question
             }
 
@@ -292,12 +246,12 @@ def create_chat_agent(rag_system):
     def retrieve(state: ChatAgentState) -> ChatAgentState:
         """RAG 검색 (Reranker 사용)"""
         print("[Agent] RAG 검색 중...")
-
+        
         question = state["question"]
-
+        
         # use_rerank=None -> RAG 시스템 설정(USE_RERANKER) 따름
         results = rag_system.search_recipes(question, k=3, use_rerank=None)
-
+        
         documents = [
             Document(
                 page_content=doc.get("content", ""),
@@ -309,38 +263,42 @@ def create_chat_agent(rag_system):
             )
             for doc in results
         ]
-
+        
         print(f"   검색 결과: {len(documents)}개")
         for i, doc in enumerate(documents[:3], 1):
             print(f"   {i}. {doc.metadata.get('title', '')[:40]}...")
-
+        
         return {"documents": documents}
-
+    
     def check_constraints(state: ChatAgentState) -> ChatAgentState:
         """제약 조건 체크 (알레르기, 비선호 음식)"""
         print("[Agent] 제약 조건 체크 중...")
-
+        
         question = state["question"]
         user_constraints = state.get("user_constraints", {})
-
+        
         if not user_constraints:
             print("   제약 조건 없음 → 스킵")
             return {"constraint_warning": ""}
-
+        
         dislikes = user_constraints.get("dislikes", [])
         allergies = user_constraints.get("allergies", [])
-
+        
         question_lower = question.lower()
         warning_parts = []
 
+        import re
         for allergy in allergies:
-            if allergy.lower() in question_lower:
+            # 단어 단위 매칭: "게" → "게"만 매칭, "맵게"는 매칭 안 됨
+            pattern = r'(?<![가-힣])' + re.escape(allergy.lower()) + r'(?![가-힣])'
+            if re.search(pattern, question_lower):
                 warning_parts.append(f"**{allergy}**는 알레르기 재료입니다!")
 
         for dislike in dislikes:
-            if dislike.lower() in question_lower:
+            pattern = r'(?<![가-힣])' + re.escape(dislike.lower()) + r'(?![가-힣])'
+            if re.search(pattern, question_lower):
                 warning_parts.append(f"**{dislike}**는 싫어하는 음식입니다.")
-
+    
         if warning_parts:
             warning_msg = "\n".join(warning_parts)
             print(f"   제약 조건 위반 감지!")
@@ -353,60 +311,60 @@ def create_chat_agent(rag_system):
     def grade_documents(state: ChatAgentState) -> ChatAgentState:
         """문서 관련성 평가"""
         print("[Agent] 관련성 평가 중...")
-
+        
         question = state["question"]
         documents = state["documents"]
-
+        
         if not documents:
             print("   문서 없음 → 웹 검색")
             return {"web_search_needed": "yes"}
-
+        
         try:
             question_lower = question.lower()
-
+            
             found_exact_match = False
             for doc in documents[:3]:
                 title = doc.metadata.get("title", "").lower()
                 if question_lower in title or any(
-                    word in title
-                    for word in question_lower.split()
+                    word in title 
+                    for word in question_lower.split() 
                     if len(word) > 1
                 ):
                     found_exact_match = True
                     break
-
+            
             if not found_exact_match:
                 print("   제목 매칭 실패 → 웹 검색")
                 return {"web_search_needed": "yes"}
-
+            
             context_text = "\n".join([
                 f"- {doc.page_content[:200]}"
                 for doc in documents[:3]
             ])
 
             from langchain_naver import ChatClovaX
-            llm = ChatClovaX(model="HCX-003", temperature=0.1, max_tokens=10)
-            chain = GRADE_PROMPT | llm
+            llm = ChatClovaX(model="HCX-003", temperature=0.2, max_tokens=10)
+            chain = GRADE_PROMPT | llm | StrOutputParser()
             score = chain.invoke({
                 "question": question,
                 "context": context_text
             })
 
             print_token_usage(score, "관련성 평가")
-
-            print(f"   평가: {score.content}")
-
-            if "yes" in score.content.lower():
+            
+            print(f"   평가: {score}")
+            
+            if "yes" in score.lower():
                 print("   DB 충분 → 생성")
                 return {"web_search_needed": "no"}
             else:
                 print("   DB 부족 → 웹 검색")
                 return {"web_search_needed": "yes"}
-
+                
         except Exception as e:
             print(f"   평가 실패: {e}")
             return {"web_search_needed": "yes"}
-
+    
     def web_search(state: ChatAgentState) -> ChatAgentState:
         """웹 검색"""
         print("[Agent] 웹 검색 실행 중...")
@@ -437,12 +395,12 @@ def create_chat_agent(rag_system):
 
             for i, doc in enumerate(documents, 1):
                 # 각 문서를 간결하게 요약
-                summarize_prompt = f"""# 레시피 요약
-질문: {question}
-내용: {doc.page_content[:800]}
+                summarize_prompt = f"""질문: {question}
 
-# 규칙: 3문장, 재료/시간/난이도 위주, 광고 제거, 정확한 양 유지
-요약:"""
+내용:
+{doc.page_content[:800]}
+
+**요약 (3문장, 재료/시간/난이도 위주, 광고 제거, 정확한 양 유지):**"""
 
                 from langchain_naver import ChatClovaX
                 from langchain_core.messages import HumanMessage
@@ -467,13 +425,13 @@ def create_chat_agent(rag_system):
     def generate(state: ChatAgentState) -> ChatAgentState:
         """답변 생성"""
         print("[Agent] 답변 생성 중...")
-
+        
         question = state["original_question"]
         documents = state["documents"]
         history = state.get("chat_history", [])
         constraint_warning = state.get("constraint_warning", "")
         user_constraints = state.get("user_constraints", {})
-
+        
         formatted_history = "\n".join(history[-10:]) if isinstance(history, list) else str(history)
 
         # 웹 검색 결과는 이미 요약되어 있으므로 전체 사용, DB 검색 결과는 800자로 제한
@@ -481,25 +439,26 @@ def create_chat_agent(rag_system):
             doc.page_content if len(doc.page_content) < 1000 else doc.page_content[:800]
             for doc in documents
         ])
-
+        
         if constraint_warning:
             try:
-                alt_prompt = f"""# 제약 경고
-{constraint_warning}
+                alt_prompt = f"""{constraint_warning}
 
-# 질문: 그래도 원하시나요? 다른 재료로 대체할까요?
-답변:"""
+    그래도 레시피를 원하시나요? 
+    아니면 비슷한 다른 재료로 대체할까요?
 
+    답변:"""
+                
                 from langchain_core.messages import HumanMessage
                 result = rag_system.chat_model.invoke([HumanMessage(content=alt_prompt)])
                 answer = f"{constraint_warning}\n\n{result.content.strip()}"
-
+                
                 return {"generation": answer}
-
+                
             except Exception as e:
                 print(f"   경고 생성 실패: {e}")
                 return {"generation": f"{constraint_warning}\n\n다른 요리를 추천해드릴까요?"}
-
+        
         try:
             # 제약 조건을 질문에 통합 (컨텍스트가 아닌 질문에 포함)
             enhanced_question = question
@@ -593,8 +552,8 @@ def create_chat_agent(rag_system):
 
             # max_tokens 명시적 설정 (토큰 절약)
             from langchain_naver import ChatClovaX
-            llm = ChatClovaX(model="HCX-003", temperature=0.3, max_tokens=500)
-            chain = GENERATE_PROMPT | llm
+            llm = ChatClovaX(model="HCX-003", temperature=0.2, max_tokens=1000)
+            chain = GENERATE_PROMPT | llm | StrOutputParser()
             answer = chain.invoke({
                 "context": context_text,
                 "question": enhanced_question,
@@ -604,6 +563,7 @@ def create_chat_agent(rag_system):
             })
 
             print_token_usage(answer, "답변 생성")
+            print(f"\n[DEBUG] LLM 원본 응답:\n{answer}\n[/DEBUG]\n")
 
             # 후처리: 조리법 제거 (채팅용, 재료만 출력)
             # "조리법:" 또는 "1. " 로 시작하는 부분 이후 제거
@@ -612,11 +572,10 @@ def create_chat_agent(rag_system):
             # 조리법 섹션 찾기 (여러 패턴 지원)
             cooking_patterns = [
                 r'\n조리법[\s:：]+.*',  # "조리법:" 또는 "조리법 :"
-                r'\n\d+\.\s+.*',  # "1. " 로 시작하는 줄들
                 r'\n\*\*조리법\*\*[\s:：]+.*',  # "**조리법:**"
             ]
 
-            cleaned_answer = answer.content
+            cleaned_answer = answer
             for pattern in cooking_patterns:
                 # 해당 패턴부터 끝까지 제거
                 match = re.search(pattern, cleaned_answer, re.DOTALL | re.IGNORECASE)
@@ -635,88 +594,87 @@ def create_chat_agent(rag_system):
             for pattern in allergy_patterns:
                 cleaned_answer = re.sub(pattern, '', cleaned_answer, flags=re.IGNORECASE)
 
+            # 볼드 없는 형식을 볼드 형식으로 통일 (웹 검색 결과 대응)
+            if '소개:' in cleaned_answer and '**소개:**' not in cleaned_answer:
+                cleaned_answer = re.sub(r'(?<!\*)소개:\s*', '**소개:** ', cleaned_answer, count=1)
+            if '재료:' in cleaned_answer and '**재료:**' not in cleaned_answer:
+                cleaned_answer = re.sub(r'(?<!\*)재료:\s*', '**재료:** ', cleaned_answer, count=1)
+
             # 소개 문구 정제: 이모티콘, 캐주얼 표현 제거
-            # 소개: 또는 **소개:** 패턴 모두 지원
-            intro_pattern = r'(?:\*\*소개:\*\*|소개\s*:)\s*(.+?)(?:\n(?:\*\*|재료\s*:|$))'
-            intro_match = re.search(intro_pattern, cleaned_answer, re.DOTALL)
-            if intro_match:
-                intro_text = intro_match.group(1).strip()
+            if '**소개:**' in cleaned_answer:
+                # 소개 섹션 추출 (같은 줄만, DOTALL 사용하지 않음)
+                intro_match = re.search(r'\*\*소개:\*\*\s*(.+)', cleaned_answer)
+                if intro_match:
+                    intro_text = intro_match.group(1).strip()
 
-                # 이모티콘 제거 (ᄒ.ᄒ, ᄏᄏ, :), ^^, 등)
-                intro_text = re.sub(r'[ᄀ-ᄒ]{2,}', '', intro_text)  # ᄏᄏ, ᄒᄒ 등
-                intro_text = re.sub(r'[:;]\)|:\(|:\)|^^|ㅎㅎ|ㅋㅋ', '', intro_text)
+                    # 이모티콘 제거 (ᄒ.ᄒ, ᄏᄏ, :), ^^, 등)
+                    intro_text = re.sub(r'[ᄀ-ᄒ]{2,}', '', intro_text)  # ᄏᄏ, ᄒᄒ 등
+                    intro_text = re.sub(r'[:;]\)|:\(|:\)|^^|ㅎㅎ|ㅋㅋ', '', intro_text)
 
-                # 캐주얼 표현 제거
-                casual_phrases = [
-                    r'알려드릴게요[!\s]*',
-                    r'드릴게요[!\s]*',
-                    r'[~]+',
-                    r'요[~]+',
-                    r'답니다[:\s]*\)',
-                    r'하죠[!\s]*',
-                    r'그만큼.*?있답니다',
-                    r'레시피를 알려드릴게요',
-                    r'소개해드릴게요',
-                ]
-                for phrase in casual_phrases:
-                    intro_text = re.sub(phrase, '', intro_text)
+                    # 캐주얼 표현 제거
+                    casual_phrases = [
+                        r'알려드릴게요[!\s]*',
+                        r'드릴게요[!\s]*',
+                        r'[~]+',
+                        r'요[~]+',
+                        r'답니다[:\s]*\)',
+                        r'하죠[!\s]*',
+                        r'그만큼.*?있답니다',
+                        r'레시피를 알려드릴게요',
+                        r'소개해드릴게요',
+                    ]
+                    for phrase in casual_phrases:
+                        intro_text = re.sub(phrase, '', intro_text)
 
-                # 다중 공백 정리
-                intro_text = re.sub(r'\s+', ' ', intro_text).strip()
+                    # 다중 공백 정리
+                    intro_text = re.sub(r'\s+', ' ', intro_text).strip()
 
-                # 마침표로 끝나지 않으면 추가
-                if intro_text and not intro_text.endswith('.'):
-                    intro_text += '.'
+                    # 마침표로 끝나지 않으면 추가
+                    if intro_text and not intro_text.endswith('.'):
+                        intro_text += '.'
 
-                # 소개 문구 교체 (두 가지 형식 모두 처리)
-                cleaned_answer = re.sub(
-                    r'(?:\*\*소개:\*\*|소개\s*:)\s*.+?(?=\n(?:\*\*|재료\s*:|$))',
-                    f'소개: {intro_text}',
-                    cleaned_answer,
-                    count=1,
-                    flags=re.DOTALL
-                )
-                print(f"   [후처리] 소개 정제됨: {intro_text[:50]}...")
+                    # 소개 문구 교체 (같은 줄만 교체, DOTALL 사용하지 않음)
+                    cleaned_answer = re.sub(
+                        r'\*\*소개:\*\*\s*.+',
+                        f'**소개:** {intro_text}',
+                        cleaned_answer,
+                        count=1
+                    )
+                    print(f"   [후처리] 소개 정제됨: {intro_text[:50]}...")
 
-            # 재료 형식 정리: 개별 재료 항목별 필터링
-            # **재료:** 또는 재료: 패턴 모두 지원
-            ingredients_split_pattern = re.split(r'(?:\*\*재료:\*\*|재료\s*:)', cleaned_answer)
-            if len(ingredients_split_pattern) == 2:
-                before_ingredients = ingredients_split_pattern[0]
-                ingredients_section = ingredients_split_pattern[1].strip()
+            # 재료 형식 정리: 줄바꿈 제거, 쉼표로 변환
+            # "- 재료명 양" 형식을 "재료명 양," 형식으로 변환
+            if '**재료:**' in cleaned_answer:
+                # 재료 섹션 추출
+                parts = cleaned_answer.split('**재료:**')
+                if len(parts) == 2:
+                    before_ingredients = parts[0]
+                    ingredients_section = parts[1].strip()
 
-                # 다음 섹션(**) 이전까지만 추출
-                next_section = re.search(r'\n\*\*', ingredients_section)
-                if next_section:
-                    ingredients_section = ingredients_section[:next_section.start()]
+                    # 줄바꿈으로 구분된 재료들을 쉼표로 변환
+                    # "- 재료명 양" → "재료명 양"
+                    ingredients_lines = []
+                    for line in ingredients_section.split('\n'):
+                        line = line.strip()
+                        if line and not line.startswith('**'):  # 다음 섹션 시작 전까지
+                            # "- " 제거
+                            line = re.sub(r'^[-\*]\s*', '', line)
+                            if line:
+                                ingredients_lines.append(line)
+                        elif line.startswith('**'):
+                            # 다음 섹션 발견, 중단
+                            break
 
-                # 줄바꿈 → 쉼표로 통합 후, 개별 재료 항목으로 분리
-                raw_text = ingredients_section.replace('\n', ',')
-                raw_text = re.sub(r'^[-\*]\s*', '', raw_text)  # "- " 제거
-                raw_items = [item.strip() for item in raw_text.split(',') if item.strip()]
+                    # 쉼표로 연결
+                    ingredients_text = ', '.join(ingredients_lines)
 
-                vague_terms = ['약간', '적당량', '조금', '넉넉히', '충분히', '적절히', '취향껏', '소량', '다량']
-                filtered_items = []
-                for item in raw_items:
-                    item = re.sub(r'^[-\*]\s*', '', item).strip()
-                    if not item:
-                        continue
-                    # 애매한 표현은 제거하되 재료명은 유지
-                    for term in vague_terms:
-                        if term in item:
-                            item = item.replace(term, '').strip()
-                            print(f"   [후처리] 애매한 양 표현 제거: '{term}' → 재료명 유지")
-                    if not item:
-                        continue
-                    filtered_items.append(item)
-
-                ingredients_text = ', '.join(filtered_items)
-                cleaned_answer = f"{before_ingredients}재료: {ingredients_text}"
-                print(f"   [후처리] 재료 형식 정리됨 ({len(filtered_items)}개 항목)")
+                    # 재구성
+                    cleaned_answer = f"{before_ingredients}**재료:** {ingredients_text}"
+                    print(f"   [후처리] 재료 형식 정리됨")
 
             print(f"   생성 완료: {cleaned_answer[:50]}...")
             return {"generation": cleaned_answer}
-
+            
         except Exception as e:
             print(f"   생성 실패: {e}")
             import traceback
@@ -724,14 +682,14 @@ def create_chat_agent(rag_system):
             return {"generation": "답변 생성에 실패했습니다."}
 
     # ===== 그래프 구성 =====
-
+    
     def decide_to_generate(state: ChatAgentState) -> Literal["web_search", "generate"]:
         """grade 노드 이후 분기 결정"""
         if state.get("web_search_needed") == "yes":
             return "web_search"
         else:
             return "generate"
-
+    
     workflow = StateGraph(ChatAgentState)
 
     # ── 모든 노드를 timed_node로 감싸기 ──
@@ -759,7 +717,7 @@ def create_chat_agent(rag_system):
     # workflow.add_edge("web_search", "summarize")  # 제거
     # workflow.add_edge("summarize", "generate")    # 제거
     workflow.add_edge("generate", END)
-
+    
     compiled = workflow.compile()
 
     print("[Agent] Adaptive RAG Agent 생성 완료")

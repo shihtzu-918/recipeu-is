@@ -12,7 +12,7 @@ from langchain_naver import ChatClovaX
 
 from core.websocket import manager
 from core.dependencies import get_rag_system
-from features.chat.agent import create_chat_agent, _node_timings, print_token_summary, print_token_usage
+from features.chat.agent import create_chat_agent, _node_timings
 from models.mysql_db import create_session, add_chat_message
 from utils.intent import detect_chat_intent, Intent, extract_allergy_dislike, extract_ingredients_from_modification
 
@@ -26,6 +26,39 @@ chat_sessions: Dict[str, dict] = {}
 # ─────────────────────────────────────────────
 # 토큰 사용량 추적 헬퍼 함수
 # ─────────────────────────────────────────────
+def print_token_usage(response, context_name: str = "LLM"):
+    """LLM 응답에서 실제 토큰 사용량 출력"""
+    print(f"\n{'='*60}")
+    print(f"[{context_name}] HCX API 토큰 사용량 (실측)")
+    print(f"{'='*60}")
+
+    # response_metadata 또는 usage_metadata에서 토큰 정보 추출
+    usage = None
+    if hasattr(response, 'response_metadata'):
+        usage = response.response_metadata.get('token_usage') or response.response_metadata.get('usage')
+    elif hasattr(response, 'usage_metadata'):
+        usage = response.usage_metadata
+
+    if usage:
+        prompt_tokens = usage.get('prompt_tokens') or usage.get('promptTokens') or usage.get('input_tokens', 0)
+        completion_tokens = usage.get('completion_tokens') or usage.get('completionTokens') or usage.get('output_tokens', 0)
+        total_tokens = usage.get('total_tokens') or usage.get('totalTokens', 0)
+
+        if total_tokens == 0:
+            total_tokens = prompt_tokens + completion_tokens
+
+        print(f"📥 입력 토큰 (prompt):     {prompt_tokens:,} tokens")
+        print(f"📤 출력 토큰 (completion): {completion_tokens:,} tokens")
+        print(f"📊 총 토큰 (total):        {total_tokens:,} tokens")
+    else:
+        print(f"⚠️  토큰 사용량 정보를 찾을 수 없습니다.")
+        print(f"응답 객체 속성: {dir(response)}")
+        if hasattr(response, 'response_metadata'):
+            print(f"response_metadata: {response.response_metadata}")
+
+    print(f"{'='*60}\n")
+
+
 def _print_timing_summary(total_ms: float):
     if not _node_timings:
         return
@@ -42,15 +75,13 @@ def _print_timing_summary(total_ms: float):
     total_sec = total_ms / 1000
     logger.info(f"│  {'TOTAL':<18} {'':20} {total_sec:>5.1f}초        │")
     logger.info("└─────────────────────────────────────────┘")
-    # _node_timings.clear()  # print_token_summary()에서 초기화하므로 여기서는 제거
+    _node_timings.clear()
 
 
 async def handle_recipe_modification(websocket: WebSocket, session: Dict, user_input: str):
     """레시피 수정 처리 (기존 레시피를 사용자 요청대로 수정)"""
     logger.info("[WS] 🔧 레시피 수정 모드 시작")
-
-    start_time = time.time()
-
+    
     # 히스토리에서 원본 레시피와 이미지 찾기 (최근 레시피 우선)
     original_recipe_content = None
     original_image = None
@@ -66,129 +97,127 @@ async def handle_recipe_modification(websocket: WebSocket, session: Dict, user_i
                 logger.info(f"[WS] 원본 레시피 발견 (최근)")
                 logger.info(f"[WS] 원본 이미지: {original_image[:60] if original_image else '없음'}...")
                 break
-
+    
     if not original_recipe_content:
         logger.warning("[WS] 원본 레시피 없음 → 일반 대화로 처리")
         return False
-
+    
     await websocket.send_json({"type": "thinking"})
 
-    modification_prompt = f"""# 원본 레시피
+    # 개인화 정보 (알레르기/비선호) 가져오기
+    user_constraints = session.get("user_constraints", {})
+    allergies = user_constraints.get("allergies", [])
+    dislikes = user_constraints.get("dislikes", [])
+    constraint_text = ""
+    if allergies:
+        constraint_text += f"\n- 알레르기 재료 (절대 사용 금지): {', '.join(allergies)}"
+    if dislikes:
+        constraint_text += f"\n- 비선호 재료 (가능한 피하기): {', '.join(dislikes)}"
+
+    modification_prompt = f"""원본 레시피:
 {original_recipe_content}
 
-# 요청
-{user_input}
+요청: {user_input}
 
-# 규칙
-- 위 레시피만 수정
-- "A 빼줘" → A 완전 제거
-- "A 말고 B" → A를 B로 교체
-- "C 추가" → C 추가 (정확한 양)
-- 재료: 쉼표 구분, 한 줄, 양 필수
-- 금지: 약간, 적당량, 조리법 출력
-- 소개: 객관적 포멀 (금지: 이모티콘, ~)
+**개인화 제약사항:**{constraint_text if constraint_text else " 없음"}
 
-# 출력 형식
-변경: 변경 사항 1줄
-요리명
+**규칙:**
+1. 위 레시피만 수정
+2. 재료 제거: "A 빼줘" → A 완전 제거
+3. 재료 대체: "A 말고 B" → A를 B로 교체
+4. 재료 추가: "C 추가" → C 추가 (정확한 양)
+5. **알레르기 재료는 수정 결과에 절대 포함 금지**
+6. **재료 형식: 쉼표 구분, 한 줄, 줄바꿈 금지**
+7. **재료 양 필수 (금지: 약간, 적당량, 조금)**
+8. **소개: 객관적, 포멀 (금지: 이모티콘, "~", "답니다:)")**
+9. 조리법 출력 금지
+
+**형식 (제목에 반드시 [ ] 포함):**
+[변경 사항 1줄]
+
+**[제목]**
 ⏱️ 시간 | 📊 난이도 | 👥 인분
-소개: 객관적 1줄
-재료: 재료1 양, 재료2 양 (한 줄, 쉼표 구분)
+**소개:** 객관적 1줄 (이모티콘 금지, 포멀하게)
+**재료:** 재료1 양, 재료2 양 (한 줄, 쉼표 구분)
 
-# 예시
-변경: 돼지고기를 참치로 교체
-참치 김치찌개
-⏱️ 30분 | 📊 초급 | 👥 2인분
-소개: 참치와 김치를 활용한 찌개 요리.
-재료: 김치 200g, 참치캔 1개, 두부 1/2모, 대파 1대
+**올바른 소개 예시:**
+"딸기와 생크림을 활용한 디저트 케이크."
+"김치와 돼지고기를 활용한 찌개 요리."
 
-출력:"""
+**잘못된 소개 (금지):**
+"쫄깃한 면발에 시원한 육수가 별미인 냉우동 입니다."
+"대중적인 레시피를 알려드릴게요 ᄒ.ᄒ"
 
+답변:"""
+    
     llm = ChatClovaX(model="HCX-003", temperature=0.2, max_tokens=800)
 
     try:
         result = llm.invoke(modification_prompt)
-        print_token_usage(result, "레시피 수정")
-
-        # 타이밍 기록
-        elapsed_ms = (time.time() - start_time) * 1000
-        _node_timings["레시피 수정"] = elapsed_ms
-
         modified_recipe = result.content.strip()
 
         # 후처리: 재료 형식 정리 및 애매한 표현 제거
         import re
 
-        # 재료 형식 정리: 개별 재료 항목별 필터링
-        # **재료:** 또는 재료: 패턴 모두 지원
-        ingredients_split = re.split(r'(?:\*\*재료:\*\*|재료\s*:)', modified_recipe)
-        if len(ingredients_split) == 2:
-            before_ingredients = ingredients_split[0]
-            ingredients_section = ingredients_split[1].strip()
+        # 볼드 없는 형식을 볼드 형식으로 통일
+        if '소개:' in modified_recipe and '**소개:**' not in modified_recipe:
+            modified_recipe = re.sub(r'(?<!\*)소개:\s*', '**소개:** ', modified_recipe, count=1)
+        if '재료:' in modified_recipe and '**재료:**' not in modified_recipe:
+            modified_recipe = re.sub(r'(?<!\*)재료:\s*', '**재료:** ', modified_recipe, count=1)
 
-            # 다음 섹션(**) 이전까지만 추출
-            next_section = re.search(r'\n\*\*', ingredients_section)
-            if next_section:
-                ingredients_section = ingredients_section[:next_section.start()]
+        # 재료 형식 정리: 줄바꿈 제거, 쉼표로 변환
+        if '**재료:**' in modified_recipe:
+            parts = modified_recipe.split('**재료:**')
+            if len(parts) == 2:
+                before_ingredients = parts[0]
+                ingredients_section = parts[1].strip()
 
-            # 줄바꿈 → 쉼표로 통합 후, 개별 재료 항목으로 분리
-            raw_text = ingredients_section.replace('\n', ',')
-            raw_text = re.sub(r'^[-\*]\s*', '', raw_text)
-            raw_items = [item.strip() for item in raw_text.split(',') if item.strip()]
+                ingredients_lines = []
+                for line in ingredients_section.split('\n'):
+                    line = line.strip()
+                    if line and not line.startswith('**'):
+                        line = re.sub(r'^[-\*]\s*', '', line)
+                        if line:
+                            ingredients_lines.append(line)
+                    elif line.startswith('**'):
+                        break
 
-            vague_terms = ['약간', '적당량', '조금', '넉넉히', '충분히', '적절히', '취향껏', '소량', '다량']
-            filtered_items = []
-            for item in raw_items:
-                item = re.sub(r'^[-\*]\s*', '', item).strip()
-                if not item:
-                    continue
-                # 애매한 표현은 제거하되 재료명은 유지
-                for term in vague_terms:
-                    if term in item:
-                        item = item.replace(term, '').strip()
-                        logger.info(f"[WS] 애매한 양 표현 제거: '{term}' → 재료명 유지")
-                if not item:
-                    continue
-                filtered_items.append(item)
-
-            ingredients_text = ', '.join(filtered_items)
-            modified_recipe = f"{before_ingredients}재료: {ingredients_text}"
-            logger.info(f"[WS] 재료 형식 정리 완료 ({len(filtered_items)}개 항목)")
+                ingredients_text = ', '.join(ingredients_lines)
+                modified_recipe = f"{before_ingredients}**재료:** {ingredients_text}"
+                logger.info("[WS] 재료 형식 정리 완료")
 
         # 소개 문구 정제
-        # **소개:** 또는 소개: 패턴 모두 지원
-        intro_pattern = r'(?:\*\*소개:\*\*|소개\s*:)\s*(.+?)(?:\n(?:\*\*|재료\s*:|$))'
-        intro_match = re.search(intro_pattern, modified_recipe, re.DOTALL)
-        if intro_match:
-            intro_text = intro_match.group(1).strip()
+        if '**소개:**' in modified_recipe:
+            intro_match = re.search(r'\*\*소개:\*\*\s*(.+)', modified_recipe)
+            if intro_match:
+                intro_text = intro_match.group(1).strip()
 
-            # 이모티콘 제거 (ᄒ.ᄒ, ᄏᄏ, :), ^^, 등)
-            intro_text = re.sub(r'[ᄀ-ᄒ]{2,}', '', intro_text)
-            intro_text = re.sub(r'[:;]\)|:\(|:\)|^^|ㅎㅎ|ㅋㅋ', '', intro_text)
+                # 이모티콘 제거 (ᄒ.ᄒ, ᄏᄏ, :), ^^, 등)
+                intro_text = re.sub(r'[ᄀ-ᄒ]{2,}', '', intro_text)
+                intro_text = re.sub(r'[:;]\)|:\(|:\)|^^|ㅎㅎ|ㅋㅋ', '', intro_text)
 
-            # 캐주얼 표현 제거
-            casual_phrases = [
-                r'알려드릴게요[!\s]*', r'드릴게요[!\s]*', r'[~]+', r'요[~]+',
-                r'답니다[:\s]*\)', r'하죠[!\s]*', r'그만큼.*?있답니다',
-                r'레시피를 알려드릴게요', r'소개해드릴게요',
-            ]
-            for phrase in casual_phrases:
-                intro_text = re.sub(phrase, '', intro_text)
+                # 캐주얼 표현 제거
+                casual_phrases = [
+                    r'알려드릴게요[!\s]*', r'드릴게요[!\s]*', r'[~]+', r'요[~]+',
+                    r'답니다[:\s]*\)', r'하죠[!\s]*', r'그만큼.*?있답니다',
+                    r'레시피를 알려드릴게요', r'소개해드릴게요',
+                ]
+                for phrase in casual_phrases:
+                    intro_text = re.sub(phrase, '', intro_text)
 
-            # 다중 공백 정리
-            intro_text = re.sub(r'\s+', ' ', intro_text).strip()
-            if intro_text and not intro_text.endswith('.'):
-                intro_text += '.'
+                # 다중 공백 정리
+                intro_text = re.sub(r'\s+', ' ', intro_text).strip()
+                if intro_text and not intro_text.endswith('.'):
+                    intro_text += '.'
 
-            # 소개 문구 교체 (두 가지 형식 모두 처리)
-            modified_recipe = re.sub(
-                r'(?:\*\*소개:\*\*|소개\s*:)\s*.+?(?=\n(?:\*\*|재료\s*:|$))',
-                f'소개: {intro_text}',
-                modified_recipe,
-                count=1,
-                flags=re.DOTALL
-            )
-            logger.info(f"[WS] 소개 정제됨: {intro_text[:50]}...")
+                # 소개 문구 교체 (같은 줄만, DOTALL 사용하지 않음)
+                modified_recipe = re.sub(
+                    r'\*\*소개:\*\*\s*.+',
+                    f'**소개:** {intro_text}',
+                    modified_recipe,
+                    count=1
+                )
+                logger.info(f"[WS] 소개 정제됨: {intro_text[:50]}...")
 
         logger.info("[WS] 레시피 수정 완료")
 
@@ -245,19 +274,10 @@ async def handle_recipe_modification(websocket: WebSocket, session: Dict, user_i
             "modification_history": session["modification_history"]  # 누적 수정 이력 전달
         })
 
-        total_ms = (time.time() - start_time) * 1000
-        _print_timing_summary(total_ms)
-        # 토큰 요약 출력
-        print_token_summary()
-
         return True
-
+        
     except Exception as e:
         logger.error(f"[WS] ❌ 레시피 수정 실패: {e}", exc_info=True)
-
-        # 에러 발생해도 토큰 요약 출력
-        print_token_summary()
-
         await websocket.send_json({
             "type": "error",
             "message": "레시피 수정 중 오류가 발생했습니다."
@@ -489,10 +509,7 @@ async def chat_websocket(
                     notifier_task = asyncio.create_task(progress_notifier())
 
                     try:
-                        # 이전 요청의 타이밍만 초기화 (현재 요청에서 기록된 타이밍은 보존)
-                        saved_timings = dict(_node_timings)
                         _node_timings.clear()
-                        _node_timings.update(saved_timings)
 
                         async def run_agent():
                             loop = asyncio.get_event_loop()
@@ -502,7 +519,6 @@ async def chat_websocket(
 
                         total_ms = (time.time() - start_time) * 1000
                         _print_timing_summary(total_ms)
-                        print_token_summary()
 
                         # 캐시 저장
                         agent_docs = result.get("documents", [])
@@ -544,7 +560,6 @@ async def chat_websocket(
                         elapsed = time.time() - start_time
                         logger.warning(f"[WS] ⏱Agent 타임아웃 ({elapsed:.1f}초)")
                         _print_timing_summary(elapsed * 1000)
-                        print_token_summary()
 
                         await websocket.send_json({
                             "type": "agent_message",
@@ -555,7 +570,6 @@ async def chat_websocket(
                         elapsed = time.time() - start_time
                         logger.error(f"[WS] Agent 실행 에러 ({elapsed:.1f}초): {e}", exc_info=True)
                         _print_timing_summary(elapsed * 1000)
-                        print_token_summary()
 
                         await websocket.send_json({
                             "type": "error",
@@ -666,9 +680,9 @@ async def chat_websocket(
                         "documents": [],
                         "generation": "",
                         "web_search_needed": "no",
-                        "user_constraints": modified_constraints,
+                        "user_constraints": modified_constraints, 
                         "constraint_warning": "",
-                        "modification_history": modification_history
+                        "modification_history": modification_history 
                     }
 
                     async def progress_notifier():
@@ -692,10 +706,7 @@ async def chat_websocket(
                     notifier_task = asyncio.create_task(progress_notifier())
 
                     try:
-                        # 이전 요청의 타이밍만 초기화 (현재 요청에서 기록된 타이밍은 보존)
-                        saved_timings = dict(_node_timings)
                         _node_timings.clear()
-                        _node_timings.update(saved_timings)
 
                         async def run_agent():
                             loop = asyncio.get_event_loop()
@@ -705,7 +716,6 @@ async def chat_websocket(
 
                         total_ms = (time.time() - start_time) * 1000
                         _print_timing_summary(total_ms)
-                        print_token_summary()
 
                         # 캐시 저장
                         agent_docs = result.get("documents", [])
@@ -747,7 +757,6 @@ async def chat_websocket(
                         elapsed = time.time() - start_time
                         logger.warning(f"[WS] ⏱Agent 타임아웃 ({elapsed:.1f}초)")
                         _print_timing_summary(elapsed * 1000)
-                        print_token_summary()
 
                         await websocket.send_json({
                             "type": "agent_message",
@@ -758,7 +767,6 @@ async def chat_websocket(
                         elapsed = time.time() - start_time
                         logger.error(f"[WS] Agent 실행 에러 ({elapsed:.1f}초): {e}", exc_info=True)
                         _print_timing_summary(elapsed * 1000)
-                        print_token_summary()
 
                         await websocket.send_json({
                             "type": "error",
@@ -785,6 +793,49 @@ async def chat_websocket(
                 logger.info(f"[WS] 사용자 메시지: {content}")
 
                 start_time = time.time()
+
+                # AI Safety 필터 (의도 분류 전에 먼저 처리)
+                # PII(개인정보) + 욕설/비속어 + 유해 입력 감지
+                try:
+                    from langchain_core.messages import HumanMessage as _HM
+                    safety_llm = ChatClovaX(model="HCX-DASH-001", temperature=0.1, max_tokens=10)
+                    safety_result = safety_llm.invoke([_HM(content=f"""입력의 유해성을 판단하세요.
+
+입력: "{content}"
+
+**감지 대상:**
+1. PII(개인정보): 전화번호, 주민번호, 이메일, 주소, 계좌번호, 비밀번호, 이름+연락처 조합
+2. 욕설/비속어: 비하, 혐오, 성적 표현, 폭언
+3. 유해 요청: 폭력, 불법 행위, 차별, 자해 관련
+
+**예외 (감지하지 않음):**
+- 음식 재료명, 요리명, 조리 용어
+- 단순 이름만("홍길동")은 PII 아님
+
+유해하면 YES, 안전하면 NO (한 단어만):""")])
+                    safety_answer = safety_result.content.strip().upper()
+                    logger.info(f"[WS] AI Safety 감지 LLM 응답: {safety_answer}")
+
+                    if "YES" in safety_answer:
+                        logger.info(f"[WS] AI Safety 감지 → 차단: {content[:50]}")
+                        block_msg = "해당 내용에는 응답할 수 없습니다. 적절한 내용으로 다시 질문해주세요."
+
+                        chat_sessions[session_id]["messages"].append({
+                            "role": "assistant",
+                            "content": block_msg
+                        })
+
+                        await websocket.send_json({
+                            "type": "safety_block",
+                            "content": block_msg
+                        })
+
+                        total_sec = (time.time() - start_time)
+                        logger.info(f"[WS] AI Safety 차단 완료 (총 {total_sec:.1f}초)")
+                        continue
+
+                except Exception as e:
+                    logger.warning(f"[WS] AI Safety 감지 실패 (무시하고 진행): {e}")
 
                 # 사용자 메시지 히스토리에 추가
                 chat_sessions[session_id]["messages"].append({
@@ -830,40 +881,40 @@ async def chat_websocket(
                             "show_button": True if detected_items else False
                         })
 
-                        total_ms = (time.time() - start_time) * 1000
-                        _print_timing_summary(total_ms)
-                        print_token_summary()
-                        logger.info(f"[WS] 알러지/비선호 감지 완료 (총 {total_ms/1000:.1f}초)")
+                        total_sec = (time.time() - start_time)
+                        logger.info(f"[WS] 알러지/비선호 감지 완료 (총 {total_sec:.1f}초)")
                         continue
 
-                # 1. 요리 무관 질문 → 외부 챗봇으로 리다이렉트
+                # 1. 요리 무관 질문 → title 검색으로 재확인 후 외부 챗봇으로 리다이렉트
                 if user_intent == Intent.NOT_COOKING:
-                    logger.info(f"[WS] 요리 무관 질문 감지")
-                    redirect_msg = "레시피 외의 질문은 외부 챗봇을 이용해 주세요."
+                    logger.info(f"[WS] 요리 무관 질문 감지 → title 검색으로 재확인")
+                    # title 매칭만 사용 (벡터 검색은 아무거나 반환하므로 제외)
+                    title_check = rag_system._milvus_title_search(content, k=1)
+                    if title_check and len(title_check) > 0:
+                        logger.info(f"[WS] title 매칭 결과 있음 → RECIPE_SEARCH로 변경 (줄임말/신조어 가능)")
+                        user_intent = Intent.RECIPE_SEARCH
+                    else:
+                        logger.info(f"[WS] RAG 검색 결과 없음 → 외부 챗봇 리다이렉트")
+                        redirect_msg = "레시피 외의 질문은 외부 챗봇을 이용해 주세요."
 
-                    chat_sessions[session_id]["messages"].append({
-                        "role": "assistant",
-                        "content": redirect_msg
-                    })
+                        chat_sessions[session_id]["messages"].append({
+                            "role": "assistant",
+                            "content": redirect_msg
+                        })
 
-                    await websocket.send_json({
-                        "type": "chat_external",
-                        "content": redirect_msg
-                    })
+                        await websocket.send_json({
+                            "type": "chat_external",
+                            "content": redirect_msg
+                        })
 
-                    total_ms = (time.time() - start_time) * 1000
-                    _print_timing_summary(total_ms)
-                    print_token_summary()
-
-                    logger.info(f"[WS] 외부 챗봇 리다이렉트 (총 {total_ms/1000:.1f}초)")
-                    continue
+                        total_sec = (time.time() - start_time)
+                        logger.info(f"[WS] 외부 챗봇 리다이렉트 (총 {total_sec:.1f}초)")
+                        continue
 
                 # 2. 요리 관련 질문 → LLM 답변 (레시피 없이)
                 if user_intent == Intent.COOKING_QUESTION:
                     logger.info(f"[WS] 요리 관련 질문 처리")
                     await websocket.send_json({"type": "thinking"})
-
-                    cooking_question_start = time.time()
 
                     # 대화 히스토리 포함
                     chat_history_text = "\n".join([
@@ -871,26 +922,25 @@ async def chat_websocket(
                         for msg in chat_sessions[session_id]["messages"][-5:]
                     ])
 
-                    question_prompt = f"""# 요리 전문가 답변
-맥락: {chat_history_text}
+                    question_prompt = f"""요리 전문가로서 질문에 답변하세요.
+
+대화 맥락:
+{chat_history_text}
+
 질문: {content}
 
-# 규칙
-- 2-3문장, 간결 명확
-- 구체적 팁/대안 제시
-- 포멀 전문적 톤
+**규칙:**
+1. 간결하고 명확하게 답변 (2-3문장)
+2. 구체적인 팁이나 대안 제시
+3. 포멀하고 전문적인 톤
+4. 개인정보(이름, 전화번호, 주소, 이메일 등) 포함 질문에는 응답 거부
+5. 요리/음식과 무관한 질문에는 응답하지 않음
 
 답변:"""
 
                     try:
-                        llm = ChatClovaX(model="HCX-003", temperature=0.3, max_tokens=200)
+                        llm = ChatClovaX(model="HCX-DASH-001", temperature=0.2, max_tokens=200)
                         result = llm.invoke(question_prompt)
-                        print_token_usage(result, "요리 질문 답변")
-
-                        # 타이밍 기록
-                        elapsed_ms = (time.time() - cooking_question_start) * 1000
-                        _node_timings["요리 질문 답변"] = elapsed_ms
-
                         answer = result.content.strip()
 
                         chat_sessions[session_id]["messages"].append({
@@ -903,20 +953,44 @@ async def chat_websocket(
                             "content": answer
                         })
 
-                        total_ms = (time.time() - start_time) * 1000
-                        _print_timing_summary(total_ms)
-                        logger.info(f"[WS] 요리 질문 답변 완료 (총 {total_ms/1000:.1f}초)")
-                        print_token_summary()
+                        total_sec = (time.time() - start_time)
+                        logger.info(f"[WS] 요리 질문 답변 완료 (총 {total_sec:.1f}초)")
                         continue
 
                     except Exception as e:
                         logger.error(f"[WS] 요리 질문 답변 실패: {e}")
-                        print_token_summary()
                         # 실패 시 레시피 검색으로 폴백
                         logger.info("[WS] 레시피 검색으로 전환")
 
                 # 3. 레시피 수정 모드 처리
                 if user_intent == Intent.RECIPE_MODIFY:
+                    # 알레르기 재료 체크 (추가/대체 요청에 알레르기 재료가 포함되어 있는지)
+                    user_constraints = chat_sessions[session_id].get("user_constraints", {})
+                    user_allergies = user_constraints.get("allergies", [])
+
+                    if user_allergies:
+                        content_lower = content.lower()
+                        matched_allergies = [item for item in user_allergies if item in content_lower]
+
+                        if matched_allergies:
+                            allergy_block_msg = f"알레르기 재료({', '.join(matched_allergies)})가 포함되어 있어 해당 수정을 진행할 수 없습니다. 다른 재료로 변경해주세요."
+                            logger.info(f"[WS] 레시피 수정 시 알레르기 재료 감지 → 차단: {matched_allergies}")
+
+                            chat_sessions[session_id]["messages"].append({
+                                "role": "assistant",
+                                "content": allergy_block_msg
+                            })
+
+                            await websocket.send_json({
+                                "type": "allergy_block",
+                                "content": allergy_block_msg,
+                                "matched_allergies": matched_allergies
+                            })
+
+                            total_sec = (time.time() - start_time)
+                            logger.info(f"[WS] 알레르기 차단 완료 (총 {total_sec:.1f}초)")
+                            continue
+
                     modification_success = await handle_recipe_modification(
                         websocket,
                         chat_sessions[session_id],
@@ -979,10 +1053,8 @@ async def chat_websocket(
                                 "show_confirmation": True
                             })
 
-                            total_ms = (time.time() - start_time) * 1000
-                            _print_timing_summary(total_ms)
-                            print_token_summary()
-                            logger.info(f"[WS] 제약사항 충돌 확인 요청 완료 (총 {total_ms/1000:.1f}초)")
+                            total_sec = (time.time() - start_time)
+                            logger.info(f"[WS] 제약사항 충돌 확인 요청 완료 (총 {total_sec:.1f}초)")
                             continue
 
                 # 알러지/비선호 재료가 포함된 검색인지 확인 (회원만)
@@ -1017,10 +1089,8 @@ async def chat_websocket(
                             "content": allergy_block_msg
                         })
 
-                        total_ms = (time.time() - start_time) * 1000
-                        _print_timing_summary(total_ms)
-                        print_token_summary()
-                        logger.info(f"[WS] 알러지 재료 차단 완료 (총 {total_ms/1000:.1f}초)")
+                        total_sec = (time.time() - start_time)
+                        logger.info(f"[WS] 알러지 재료 차단 완료 (총 {total_sec:.1f}초)")
                         continue
 
                     # 비선호 음식만 포함 → 확인 요청
@@ -1050,10 +1120,8 @@ async def chat_websocket(
                             "show_confirmation": True
                         })
 
-                        total_ms = (time.time() - start_time) * 1000
-                        _print_timing_summary(total_ms)
-                        print_token_summary()
-                        logger.info(f"[WS] 비선호 음식 확인 요청 완료 (총 {total_ms/1000:.1f}초)")
+                        total_sec = (time.time() - start_time)
+                        logger.info(f"[WS] 비선호 음식 확인 요청 완료 (총 {total_sec:.1f}초)")
                         continue
 
                 chat_history = [
@@ -1079,22 +1147,22 @@ async def chat_websocket(
                     "web_search_needed": "no",
                     "user_constraints": chat_sessions[session_id]["user_constraints"],
                     "constraint_warning": "",
-                    "modification_history": modification_history
+                    "modification_history": modification_history  
                 }
 
                 async def progress_notifier():
                     steps = [
-                        (0, "쿼리 재작성 중..."),
-                        (3, "레시피 검색 중..."),
-                        (6, "관련성 평가 중..."),
-                        (10, "답변 생성 중..."),
+                        (0, "쿼리 재작성 중..."), 
+                        (3, "레시피 검색 중..."), 
+                        (6, "관련성 평가 중..."), 
+                        (10, "답변 생성 중..."), 
                         (15, "거의 완료...")
                     ]
                     for delay, msg in steps:
                         await asyncio.sleep(delay if delay == 0 else 3)
                         if time.time() - start_time < 20:
                             await websocket.send_json({
-                                "type": "progress",
+                                "type": "progress", 
                                 "message": f"{msg} ({int(time.time() - start_time)}초)"
                             })
                         else:
@@ -1103,10 +1171,7 @@ async def chat_websocket(
                 notifier_task = asyncio.create_task(progress_notifier())
 
                 try:
-                    # 이전 요청의 타이밍만 초기화 (현재 요청에서 기록된 채팅 의도 감지 등 보존)
-                    saved_timings = dict(_node_timings)
                     _node_timings.clear()
-                    _node_timings.update(saved_timings)
 
                     async def run_agent():
                         loop = asyncio.get_event_loop()
@@ -1116,7 +1181,6 @@ async def chat_websocket(
 
                     total_ms = (time.time() - start_time) * 1000
                     _print_timing_summary(total_ms)
-                    print_token_summary()
 
                     # 캐시 저장
                     agent_docs = result.get("documents", [])
@@ -1142,15 +1206,15 @@ async def chat_websocket(
                     response = agent_response or "답변을 생성할 수 없습니다."
 
                     chat_sessions[session_id]["messages"].append({
-                        "role": "assistant",
+                        "role": "assistant", 
                         "content": response
                     })
-
+                    
                     await websocket.send_json({
-                        "type": "agent_message",
+                        "type": "agent_message", 
                         "content": response
                     })
-
+                    
                     total_sec = total_ms / 1000
                     logger.info(f"[WS] 응답 완료 (총 {total_sec:.1f}초)")
 
@@ -1158,24 +1222,22 @@ async def chat_websocket(
                     elapsed = time.time() - start_time
                     logger.warning(f"[WS] Agent 타임아웃 ({elapsed:.1f}초)")
                     _print_timing_summary(elapsed * 1000)
-                    print_token_summary()
-
+                    
                     await websocket.send_json({
                         "type": "agent_message",
                         "content": f"죄송합니다. 응답 시간이 너무 오래 걸렸어요 ({int(elapsed)}초). 다시 시도해주세요."
                     })
-
+                    
                 except Exception as e:
                     elapsed = time.time() - start_time
                     logger.error(f"[WS] Agent 실행 에러 ({elapsed:.1f}초): {e}", exc_info=True)
                     _print_timing_summary(elapsed * 1000)
-                    print_token_summary()
-
+                    
                     await websocket.send_json({
-                        "type": "error",
+                        "type": "error", 
                         "message": f"오류가 발생했습니다 ({int(elapsed)}초). 다시 시도해주세요."
                     })
-
+                    
                 finally:
                     notifier_task.cancel()
                     try:
