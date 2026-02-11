@@ -58,6 +58,20 @@ export const useChatAgent = (sessionId) => {
 
         setIsThinking(false);
         setCurrentProgress("");
+      } else if (data.type === "safety_block") {
+        // AI Safety 차단 메시지
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: "assistant",
+            content: data.content,
+            isSafetyBlock: true,
+            timestamp: new Date().toISOString(),
+          },
+        ]);
+
+        setIsThinking(false);
+        setCurrentProgress("");
       } else if (data.type === "thinking") {
         setIsThinking(true);
         setCurrentProgress("생각 중...");

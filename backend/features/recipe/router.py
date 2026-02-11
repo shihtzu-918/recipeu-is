@@ -2,13 +2,15 @@
 """
 Recipe REST API 라우터
 """
+import os
 import json
 import asyncio
 from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks
+from pymongo import MongoClient
 
 from core.dependencies import get_rag_system
 from core.exceptions import RAGNotAvailableError
-from features.recipe.service import RecipeService, print_recipe_token_summary, print_token_usage, _step_timings
+from features.recipe.service import RecipeService
 from features.recipe.schemas import RecipeGenerateRequest
 from .prompts import RECIPE_QUERY_EXTRACTION_PROMPT, RECIPE_GENERATION_PROMPT
 from models.mysql_db import (
@@ -20,64 +22,163 @@ from models.mysql_db import (
 router = APIRouter()
 
 
-def format_recipe(data) -> str:
-    """레시피를 보기 좋게 포맷팅"""
-    output = []
+# ─────────────────────────────────────────────
+# 토큰 사용량 추적 헬퍼 함수
+# ─────────────────────────────────────────────
+# 요청별 토큰 누적 (요청당 초기화됨)
+_token_accumulator: dict = {"prompt": 0, "completion": 0, "total": 0}
+# 단계별 토큰 정보 저장 (단계명 -> {prompt, completion, total})
+_step_tokens: dict = {}
+# 단계별 시간 추적 (단계명 -> 시간(ms))
+_step_timings: dict = {}
+def print_token_usage(response, context_name: str = "LLM"):
+    """LLM 응답에서 실제 토큰 사용량 출력 (개선 버전)"""
+    print(f"\n{'='*60}")
+    print(f"[{context_name}] HCX API 토큰 사용량 (실측)")
+    print(f"{'='*60}")
 
-    # 헤더
-    output.append("=" * 60)
-    recipe_name = data.get('recipe_name') or data.get('title', '추천 요리')
-    output.append(f"📝 요리: {recipe_name}")
-    output.append("=" * 60)
+    # 개선: usage_metadata 우선 확인 (LangChain 표준)
+    usage = None
+    source = ""
 
-    # 요리 정보 (cook_time, level, servings)
-    output.append(f"\n📋 요리 정보")
-    output.append("-" * 60)
-    cook_time = data.get('cook_time', '')
-    level = data.get('level', '')
-    servings = data.get('servings', '')
+    if hasattr(response, 'usage_metadata'):
+        usage = response.usage_metadata
+        source = "usage_metadata"
+    elif hasattr(response, 'response_metadata'):
+        usage = response.response_metadata.get('token_usage')
+        source = "response_metadata.token_usage"
 
-    if cook_time:
-        output.append(f"  ⏱️  조리시간: {cook_time}")
-    if level:
-        output.append(f"  📊 난이도: {level}")
-    if servings:
-        output.append(f"  👥 인분: {servings}")
-
-    # 재료
-    ingredients = data.get('ingredients', [])
-    output.append(f"\n🥘 재료 ({len(ingredients)}가지)")
-    output.append("-" * 60)
-    for idx, ingredient in enumerate(ingredients, 1):
-        # 딕셔너리 형태
-        if isinstance(ingredient, dict):
-            name = ingredient.get('name', '')
-            amount = ingredient.get('amount', '')
-            output.append(f"  {idx:2d}. {name:<30s} {amount:>15s}")
-        # 문자열 형태
+    if usage:
+        # 개선: 소스에 따라 필드명 분기
+        if source == "usage_metadata":
+            prompt_tokens = usage.get('input_tokens', 0)
+            completion_tokens = usage.get('output_tokens', 0)
+            total_tokens = usage.get('total_tokens', 0)
         else:
-            output.append(f"  {idx:2d}. {str(ingredient)}")
+            prompt_tokens = usage.get('prompt_tokens', 0)
+            completion_tokens = usage.get('completion_tokens', 0)
+            total_tokens = usage.get('total_tokens', 0)
 
-    # 조리 단계
-    steps = data.get('steps', [])
-    output.append(f"\n👨‍🍳 조리 과정 ({len(steps)}단계)")
-    output.append("-" * 60)
-    for step in steps:
-        # 딕셔너리 형태
-        if isinstance(step, dict):
-            step_no = step.get('no', step.get('step', ''))
-            desc = step.get('desc', step.get('description', step.get('content', '')))
-            output.append(f"  [{step_no}] {desc}")
-        # 문자열 형태
-        else:
-            output.append(f"  {str(step)}")
+        # Fallback: total_tokens이 없으면 계산
+        if total_tokens == 0:
+            total_tokens = prompt_tokens + completion_tokens
 
-    output.append("\n" + "=" * 60)
+        # 전체 누적
+        _token_accumulator["prompt"] += prompt_tokens
+        _token_accumulator["completion"] += completion_tokens
+        _token_accumulator["total"] += total_tokens
 
-    return "\n".join(output)
+        # 단계별 저장 (누적)
+        if context_name not in _step_tokens:
+            _step_tokens[context_name] = {"prompt": 0, "completion": 0, "total": 0}
+        _step_tokens[context_name]["prompt"] += prompt_tokens
+        _step_tokens[context_name]["completion"] += completion_tokens
+        _step_tokens[context_name]["total"] += total_tokens
+
+        print(f"📥 입력 토큰 (prompt):     {prompt_tokens:,} tokens")
+        print(f"📤 출력 토큰 (completion): {completion_tokens:,} tokens")
+        print(f"📊 총 토큰 (total):        {total_tokens:,} tokens")
+        print(f"🔍 토큰 소스: {source}")
+    else:
+        print(f"⚠️  토큰 사용량 정보를 찾을 수 없습니다.")
+        print(f"응답 객체 속성: {dir(response)}")
+        if hasattr(response, 'response_metadata'):
+            print(f"response_metadata: {response.response_metadata}")
+        if hasattr(response, 'usage_metadata'):
+            print(f"usage_metadata: {response.usage_metadata}")
+
+    print(f"{'='*60}\n")
+
+def print_recipe_token_brief():
+    """레시피 생성 토큰 사용량 간단 요약 (🔷 박스)"""
+    has_tokens = _token_accumulator["total"] > 0
+
+    if not has_tokens:
+        return
+
+    print(f"\n{'🔷'*30}")
+    print(f"{'  '*10}📊 레시피 생성 토큰 사용량 요약")
+    print(f"{'🔷'*30}")
+    print(f"📥 총 입력 토큰 (prompt):     {_token_accumulator['prompt']:,} tokens")
+    print(f"📤 총 출력 토큰 (completion): {_token_accumulator['completion']:,} tokens")
+    print(f"📊 총합 (total):              {_token_accumulator['total']:,} tokens")
+    print(f"{'🔷'*30}\n")
 
 
-# RecipeService, print_recipe_token_summary, print_token_usage, _step_timings는 service.py에서 import함 (line 11)
+def print_recipe_token_detail():
+    """레시피 생성 토큰 사용량 상세 표 출력"""
+    has_tokens = _token_accumulator["total"] > 0
+    has_timings = len(_step_timings) > 0
+
+    if not has_tokens and not has_timings:
+        return
+
+    # 1) 단계별 토큰 요약 표 (마크다운)
+    if has_tokens:
+        print("\n" + "="*100)
+        print("- 📋 단계별 상세 요약\n")
+        print("| Step | 설명 | Prompt Tokens | Completion Tokens | Total Tokens |")
+        print("|------|------|---------------|-------------------|--------------|")
+
+        # 단계 순서 정의
+        step_order = ["검색 쿼리 추출", "레시피 생성"]
+        step_metadata = {
+            "검색 쿼리 추출": {"step": "1", "desc": "검색 쿼리 추출"},
+            "레시피 생성": {"step": "2", "desc": "레시피 생성"},
+        }
+
+        # 단계 순서대로 출력
+        for step_name in step_order:
+            tokens = _step_tokens.get(step_name, {"prompt": 0, "completion": 0, "total": 0})
+            meta = step_metadata.get(step_name, {"step": "-", "desc": step_name})
+
+            if tokens["total"] > 0:
+                prompt_str = str(tokens["prompt"]) if tokens["prompt"] > 0 else "-"
+                completion_str = str(tokens["completion"]) if tokens["completion"] > 0 else "-"
+                total_str = str(tokens["total"]) if tokens["total"] > 0 else "-"
+                print(f"| {meta['step']} | {meta['desc']} | {prompt_str} | {completion_str} | {total_str} |")
+
+        # 2) 전체 합계 요약 표 (마크다운)
+        print("\n- 📊 전체 합계 요약\n")
+        print("| 구분 | Prompt Tokens | Completion Tokens | Total Tokens |")
+        print("|------|---------------|-------------------|--------------|")
+        print(f"| 합계 | {_token_accumulator['prompt']:,} | {_token_accumulator['completion']:,} | {_token_accumulator['total']:,} |")
+
+    # 3) 성능 병목 표: 동작 플로우 순서대로 (마크다운)
+    if has_timings:
+        print("\n- ⚡ 성능 병목 분석\n")
+        print("| 동작 | 단계 | Latency(s) | 비율 |")
+        print("|------|------|------------|------|")
+
+        # 동작 순서 정의 (플로우 순서)
+        step_order = ["검색 쿼리 추출", "레시피 생성"]
+        total_time = sum(_step_timings.values())
+
+        for order, step_name in enumerate(step_order, 1):
+            ms = _step_timings.get(step_name, 0)
+            if ms > 0:
+                sec = ms / 1000
+                ratio = (ms / total_time * 100) if total_time > 0 else 0
+                print(f"| {order} | {step_name} | {sec:.1f} | ~{ratio:.0f}% |")
+
+        # 총 소요 시간 추가
+        total_sec = total_time / 1000
+        print(f"| - | **TOTAL** | **{total_sec:.1f}** | **100%** |")
+
+    print("="*100 + "\n")
+
+    # 초기화
+    _token_accumulator["prompt"] = 0
+    _token_accumulator["completion"] = 0
+    _token_accumulator["total"] = 0
+    _step_tokens.clear()
+    _step_timings.clear()
+
+def print_recipe_token_summary():
+    """레시피 생성 토큰 사용량 요약 출력 (하위 호환성 유지)"""
+    print_recipe_token_brief()
+    print_recipe_token_detail()
+
 
 
 def _format_elapsed_time(seconds) -> str:

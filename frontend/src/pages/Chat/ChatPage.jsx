@@ -523,6 +523,17 @@ export default function ChatPage() {
         ]);
         setIsThinking(false);
         setHasRecipeGenerated(false);
+      } else if (data.type === "safety_block") {
+        // AI Safety 차단 메시지
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: "assistant",
+            content: data.content,
+            timestamp: new Date().toISOString(),
+          },
+        ]);
+        setIsThinking(false);
       } else if (data.type === "allergy_dislike_detected") {
         // 알러지/비선호 음식 감지
         setMessages((prev) => [
@@ -536,6 +547,17 @@ export default function ChatPage() {
               items: data.detected_items,
               showButton: data.show_button,
             },
+          },
+        ]);
+        setIsThinking(false);
+      } else if (data.type === "allergy_block") {
+        // 알레르기 재료 차단 (레시피 수정 시)
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: "assistant",
+            content: data.content,
+            timestamp: new Date().toISOString(),
           },
         ]);
         setIsThinking(false);

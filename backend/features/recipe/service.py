@@ -78,37 +78,6 @@ def print_token_usage(response, context_name: str = "LLM"):
 
     print(f"{'='*60}\n")
 
-def print_formatted_recipe(recipe: Dict):
-    """생성된 레시피를 보기 좋게 출력 (코드 블록 포함)"""
-    print("\n```")
-    print("="*60)
-    print(f"📝 요리: {recipe.get('title', '제목 없음')}")
-    print("="*60)
-    print("\n📋 요리 정보")
-    print("-" * 60)
-    print(f"  ⏱️  조리시간: {recipe.get('cook_time', '-')}")
-    print(f"  📊 난이도: {recipe.get('level', '-')}")
-    print(f"  👥 인분: {recipe.get('servings', '-')}")
-
-    ingredients = recipe.get('ingredients', [])
-    print(f"\n🥘 재료 ({len(ingredients)}가지)")
-    print("-" * 60)
-    for i, ing in enumerate(ingredients, 1):
-        name = ing.get('name', '')
-        amount = ing.get('amount', '')
-        print(f"   {i}. {name:<40} {amount}")
-
-    steps = recipe.get('steps', [])
-    print(f"\n👨‍🍳 조리 과정 ({len(steps)}단계)")
-    print("-" * 60)
-    for step in steps:
-        no = step.get('no', '-')
-        desc = step.get('desc', '')
-        print(f"  [{no}] {desc}")
-
-    print("\n" + "="*60)
-    print("```\n")
-
 def print_recipe_token_brief():
     """레시피 생성 토큰 사용량 간단 요약 (🔷 박스)"""
     has_tokens = _token_accumulator["total"] > 0
@@ -141,31 +110,18 @@ def print_recipe_token_detail():
         print("|------|------|---------------|-------------------|--------------|")
 
         # 단계 순서 정의
-        step_order = ["검색 쿼리 추출", "레시피 생성", "상세 레시피 생성"]
+        step_order = ["검색 쿼리 추출", "레시피 생성"]
         step_metadata = {
             "검색 쿼리 추출": {"step": "1", "desc": "검색 쿼리 추출"},
             "레시피 생성": {"step": "2", "desc": "레시피 생성"},
-            "상세 레시피 생성": {"step": "1", "desc": "상세 레시피 생성"},
         }
 
-        printed_steps = set()
-
-        # 1) 정의된 순서대로 출력
+        # 단계 순서대로 출력
         for step_name in step_order:
             tokens = _step_tokens.get(step_name, {"prompt": 0, "completion": 0, "total": 0})
             meta = step_metadata.get(step_name, {"step": "-", "desc": step_name})
 
             if tokens["total"] > 0:
-                prompt_str = str(tokens["prompt"]) if tokens["prompt"] > 0 else "-"
-                completion_str = str(tokens["completion"]) if tokens["completion"] > 0 else "-"
-                total_str = str(tokens["total"]) if tokens["total"] > 0 else "-"
-                print(f"| {meta['step']} | {meta['desc']} | {prompt_str} | {completion_str} | {total_str} |")
-                printed_steps.add(step_name)
-
-        # 2) 정의되지 않은 나머지 출력
-        for step_name, tokens in _step_tokens.items():
-            if step_name not in printed_steps and tokens["total"] > 0:
-                meta = step_metadata.get(step_name, {"step": "-", "desc": step_name})
                 prompt_str = str(tokens["prompt"]) if tokens["prompt"] > 0 else "-"
                 completion_str = str(tokens["completion"]) if tokens["completion"] > 0 else "-"
                 total_str = str(tokens["total"]) if tokens["total"] > 0 else "-"
@@ -184,29 +140,15 @@ def print_recipe_token_detail():
         print("|------|------|------------|------|")
 
         # 동작 순서 정의 (플로우 순서)
-        step_order = ["검색 쿼리 추출", "레시피 생성", "상세 레시피 생성"]
+        step_order = ["검색 쿼리 추출", "레시피 생성"]
         total_time = sum(_step_timings.values())
 
-        printed_timing_keys = set()
-        order_counter = 1
-
-        # 1) 정의된 순서대로 출력
-        for step_name in step_order:
+        for order, step_name in enumerate(step_order, 1):
             ms = _step_timings.get(step_name, 0)
             if ms > 0:
                 sec = ms / 1000
                 ratio = (ms / total_time * 100) if total_time > 0 else 0
-                print(f"| {order_counter} | {step_name} | {sec:.1f} | ~{ratio:.0f}% |")
-                printed_timing_keys.add(step_name)
-                order_counter += 1
-
-        # 2) 정의되지 않은 나머지 출력
-        for step_name, ms in _step_timings.items():
-            if step_name not in printed_timing_keys and ms > 0:
-                sec = ms / 1000
-                ratio = (ms / total_time * 100) if total_time > 0 else 0
-                print(f"| {order_counter} | {step_name} | {sec:.1f} | ~{ratio:.0f}% |")
-                order_counter += 1
+                print(f"| {order} | {step_name} | {sec:.1f} | ~{ratio:.0f}% |")
 
         # 총 소요 시간 추가
         total_sec = total_time / 1000
@@ -361,49 +303,49 @@ class RecipeService:
         self.rag = rag_system
         self.db = recipe_db
         self.user_profile = user_profile or {}
-
+    
     async def generate_recipe(
-        self,
+        self, 
         chat_history: List[Dict[str, str]],
         member_info: Dict[str, Any] = None
     ) -> Dict[str, Any]:
         """상세 레시피 생성 (대화 기반) + 이미지 URL"""
-
+        
         print(f"[RecipeService] 레시피 생성 시작")
         print(f"[RecipeService] 대화 개수: {len(chat_history)}")
         print(f"[RecipeService] 가족 정보: {member_info}")
-
+        
         # 1. LLM으로 대화 분석 + 검색 쿼리 생성
         search_query = self._extract_search_query_with_llm(chat_history, member_info)
-
+        
         print(f"[RecipeService] 생성된 검색 쿼리: {search_query}")
-
+        
         # 2. RAG 검색
         retrieved_docs = self.rag.search_recipes(search_query, k=3, use_rerank=False)
-
+        
         print(f"[RecipeService] RAG 검색 결과: {len(retrieved_docs)}개")
-
+        
         # 웹 검색 여부 판단
         from_web_search = not retrieved_docs or len(retrieved_docs) == 0
-
+        
         # 3. 알레르기/비선호 필터링
         filtered_docs = self._filter_by_constraints(retrieved_docs, member_info)
-
+        
         print(f"[RecipeService] 필터링 후: {len(filtered_docs)}개")
-
+        
         # 4. LLM으로 최종 레시피 생성
         recipe_json = self._generate_final_recipe_with_llm(
             chat_history=chat_history,
             member_info=member_info,
             context_docs=filtered_docs
         )
-
+        
         print(f"[RecipeService] 레시피 생성 완료: {recipe_json.get('title')}")
-
+        
         # 5. 이미지 찾기
         recipe_title = recipe_json.get('title', '')
         best_image = ""
-
+        
         if from_web_search:
             # 웹 검색이면 기본 이미지
             print(f"[RecipeService] 웹 검색 레시피 → 기본 이미지 사용")
@@ -412,32 +354,27 @@ class RecipeService:
             # RAG 검색이면 MongoDB에서 찾기 (미사여구 제거)
             if recipe_title:
                 best_image = self._find_image_by_title(recipe_title)
-
+            
             # MongoDB에서도 못 찾으면 원본 검색 결과에서
             if not best_image:
                 print(f"[RecipeService] 제목 검색 실패 → 원본 검색 결과 사용")
                 best_image = self._get_best_image(filtered_docs)
-
+        
         print(f"[RecipeService] 선택된 이미지: {best_image or '기본 이미지'}")
-
+        
         # 6. 이미지 URL 추가
         recipe_json['image'] = best_image
         recipe_json['img_url'] = best_image
-
+        
         # 7. 인원수 설정
         servings = len(member_info.get('names', [])) if member_info and member_info.get('names') else 1
         if 'servings' not in recipe_json or not recipe_json['servings']:
             recipe_json['servings'] = f"{servings}인분"
-
+        
         print(f"[RecipeService] 최종 레시피: {recipe_json.get('title')}")
         print(f"[RecipeService] 인원수: {recipe_json['servings']}")
         print(f"[RecipeService] 이미지: {recipe_json.get('image', 'None')[:60]}...")
-
-        # ✅ 토큰 brief → 레시피 출력 → 토큰 detail 순서로 출력
-        print_recipe_token_brief()
-        print_formatted_recipe(recipe_json)
-        print_recipe_token_detail()
-
+        
         return recipe_json
 
     async def generate_recipe_from_existing(
@@ -484,11 +421,6 @@ class RecipeService:
         print(f"[RecipeService] 인원수: {recipe_json['servings']}")
         print(f"[RecipeService] 이미지: {recipe_json.get('image', 'None')[:60]}...")
 
-        # ✅ 토큰 brief → 레시피 출력 → 토큰 detail 순서로 출력
-        print_recipe_token_brief()
-        print_formatted_recipe(recipe_json)
-        print_recipe_token_detail()
-
         return recipe_json
 
     def _extract_title_from_recipe(self, recipe_content: str) -> str:
@@ -534,8 +466,6 @@ class RecipeService:
         member_info: Dict
     ) -> Dict:
         """LLM으로 기존 레시피를 상세 조리 과정으로 확장"""
-        import time
-        start_time = time.time()
 
         servings = len(member_info.get('names', [])) if member_info else 1
         tools = ', '.join(member_info.get('tools', [])) if member_info else '모든 도구'
@@ -552,14 +482,9 @@ class RecipeService:
 
         try:
             result = llm.invoke(prompt)
-            print_token_usage(result, "상세 레시피 생성")
-
-            elapsed_ms = (time.time() - start_time) * 1000
-            _step_timings["상세 레시피 생성"] = elapsed_ms
-
             response_text = result.content.strip()
 
-            # TOON 파싱 → JSON fallback
+            # TOON 우선 → JSON fallback 파싱
             recipe_json = _parse_recipe_response(response_text, servings)
 
             print(f"[RecipeService] 상세 레시피 생성 성공: {recipe_json.get('title')}")
@@ -616,7 +541,7 @@ class RecipeService:
         except Exception as e:
             print(f"[RecipeService] MongoDB 제목 검색 실패: {e}")
             return ""
-
+    
     def _get_image_from_mongo(self, recipe_id: str) -> str:
         """MongoDB에서 레시피 이미지 URL 가져오기"""
         try:
@@ -624,7 +549,7 @@ class RecipeService:
                 {"recipe_id": recipe_id},
                 {"image": 1, "_id": 0}
             )
-
+            
             if recipe and "image" in recipe:
                 image_url = recipe["image"]
                 print(f"[RecipeService] MongoDB 이미지: {image_url[:50]}...")
@@ -632,11 +557,11 @@ class RecipeService:
             else:
                 print(f"[RecipeService] MongoDB에 이미지 없음: recipe_id={recipe_id}")
                 return ""
-
+                
         except Exception as e:
             print(f"[RecipeService] MongoDB 이미지 조회 실패: {e}")
             return ""
-
+    
     def _get_best_image(self, filtered_docs: List[Dict]) -> str:
         """
         필터링된 레시피 중 이미지 선택
@@ -644,26 +569,23 @@ class RecipeService:
         """
         print("[RecipeService] 제목 검색 실패 → 기본 이미지 사용")
         return "https://kr.object.ncloudstorage.com/recipu-bucket/assets/default_img.webp"
-
+    
     def _extract_search_query_with_llm(
-        self,
+        self, 
         chat_history: List[Dict],
         member_info: Dict
     ) -> str:
         """LLM으로 검색 쿼리 추출"""
-
-        import time
-        start_time = time.time()
-
+        
         conversation = "\n".join([
             f"{msg['role']}: {msg['content']}"
             for msg in chat_history[-10:]
         ])
-
+        
         servings = len(member_info.get('names', [])) if member_info else 1
         allergies = ', '.join(member_info.get('allergies', [])) if member_info else '없음'
         dislikes = ', '.join(member_info.get('dislikes', [])) if member_info else '없음'
-
+        
         # 프롬프트 사용
         prompt = RECIPE_QUERY_EXTRACTION_PROMPT.format(
             conversation=conversation,
@@ -671,17 +593,13 @@ class RecipeService:
             allergies=allergies,
             dislikes=dislikes
         )
-
+        
         from langchain_naver import ChatClovaX
-        llm = ChatClovaX(model="HCX-003", temperature=0.1, max_tokens=50)
-
+        llm = ChatClovaX(model="HCX-DASH-001", temperature=0.2, max_tokens=50)
+        
         try:
             result = llm.invoke(prompt)
             print_token_usage(result, "검색 쿼리 추출")
-
-            # 타이밍 기록
-            elapsed_ms = (time.time() - start_time) * 1000
-            _step_timings["검색 쿼리 추출"] = elapsed_ms
 
             query = result.content.strip()
             print(f"[RecipeService] LLM 추출 쿼리: {query}")
@@ -689,63 +607,63 @@ class RecipeService:
         except Exception as e:
             print(f"[RecipeService] 쿼리 추출 실패: {e}")
             return self._simple_keyword_extraction(chat_history)
-
+    
     def _simple_keyword_extraction(self, chat_history: List[Dict]) -> str:
         """간단한 키워드 추출 (Fallback)"""
         food_keywords = []
-
+        
         for msg in chat_history:
             if msg.get('role') == 'user':
                 content = msg.get('content', '').lower()
                 if any(k in content for k in ['찌개', '국', '탕', '볶음', '구이', '조림']):
                     words = content.split()
                     food_keywords.extend([w for w in words if len(w) > 1])
-
+        
         return ' '.join(food_keywords[:5]) if food_keywords else "한식 요리"
-
+    
     def _filter_by_constraints(
         self,
         recipes: List[Dict],
         member_info: Dict
     ) -> List[Dict]:
         """알레르기/비선호 필터링"""
-
+        
         if not member_info:
             return recipes[:5]
-
+        
         filtered = []
-
+        
         for recipe in recipes:
             content = recipe.get("content", "").lower()
-
+            
             # 알레르기 체크
             if member_info.get("allergies"):
                 has_allergen = any(
-                    allergen.lower() in content
+                    allergen.lower() in content 
                     for allergen in member_info["allergies"]
                 )
                 if has_allergen:
                     continue
-
+            
             # 비선호 재료 체크
             if member_info.get("dislikes"):
                 has_dislike = any(
-                    dislike.lower() in content
+                    dislike.lower() in content 
                     for dislike in member_info["dislikes"]
                 )
                 if has_dislike:
                     continue
-
+            
             filtered.append(recipe)
-
+            
             if len(filtered) >= 5:
                 break
-
+        
         if len(filtered) < 3:
             return recipes[:3]
-
+        
         return filtered
-
+    
     def _generate_final_recipe_with_llm(
         self,
         chat_history: List[Dict],
@@ -753,25 +671,22 @@ class RecipeService:
         context_docs: List[Dict]
     ) -> Dict:
         """LLM으로 최종 레시피 JSON 생성"""
-
-        import time
-        start_time = time.time()
-
+        
         conversation = "\n".join([
             f"{msg['role']}: {msg['content']}"
             for msg in chat_history
         ])
-
+        
         context_text = "\n\n".join([
             f"[레시피 {i+1}] {doc.get('title')}\n{doc.get('content', '')[:800]}"
             for i, doc in enumerate(context_docs[:5])
         ])
-
+        
         servings = len(member_info.get('names', [])) if member_info else 1
         allergies = ', '.join(member_info.get('allergies', [])) if member_info else '없음'
         dislikes = ', '.join(member_info.get('dislikes', [])) if member_info else '없음'
         tools = ', '.join(member_info.get('tools', [])) if member_info else '모든 도구'
-
+        
         # 프롬프트 사용
         prompt = RECIPE_GENERATION_PROMPT.format(
             conversation=conversation,
@@ -781,21 +696,17 @@ class RecipeService:
             tools=tools,
             context=context_text
         )
-
+        
         from langchain_naver import ChatClovaX
-        llm = ChatClovaX(model="HCX-003", temperature=0.2, max_tokens=2000)
-
+        llm = ChatClovaX(model="HCX-DASH-003", temperature=0.2, max_tokens=2000)
+        
         try:
             result = llm.invoke(prompt)
             print_token_usage(result, "레시피 생성")
 
-            # 타이밍 기록
-            elapsed_ms = (time.time() - start_time) * 1000
-            _step_timings["레시피 생성"] = elapsed_ms
-
             response_text = result.content.strip()
 
-            # TOON 파싱 → JSON fallback
+            # TOON 우선 → JSON fallback 파싱
             recipe_json = _parse_recipe_response(response_text, servings)
 
             print(f"[RecipeService] 레시피 생성 성공: {recipe_json.get('title')}")
